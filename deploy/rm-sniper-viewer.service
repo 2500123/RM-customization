@@ -1,0 +1,20 @@
+[Unit]
+Description=RoboMaster Sniper - MQTT Viewer (receive + H.264 decode + GUI)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=hyc
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=/home/hyc/.Xauthority"
+WorkingDirectory=/home/hyc/002/Pacific_doorlock_sniper
+
+ExecStart=/usr/bin/python3 /home/hyc/002/Pacific_doorlock_sniper/tools/pyqt_custombyteblock_viewer.py \
+    --mode h264_stream --host 192.168.12.1 --robot-id 1 --print-stats
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

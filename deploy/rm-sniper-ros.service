@@ -1,0 +1,22 @@
+[Unit]
+Description=RoboMaster Sniper - ROS pipeline (hik_camera + video_encoder)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=hyc
+WorkingDirectory=/home/hyc/002/Pacific_doorlock_sniper
+Environment="HOME=/home/hyc"
+
+ExecStart=/bin/bash /home/hyc/002/Pacific_doorlock_sniper/deploy/start-ros-pipeline.sh
+
+Restart=on-failure
+RestartSec=3
+
+# USB camera access
+DeviceAllow=/dev/bus/usb rw
+DevicePolicy=strict
+
+[Install]
+WantedBy=multi-user.target

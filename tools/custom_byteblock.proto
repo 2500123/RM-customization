@@ -1,0 +1,27 @@
+// RoboMaster 自定义客户端 Protobuf 消息定义
+// 
+// 编译方式:
+//   protoc --python_out=tools tools/custom_byteblock.proto
+//
+// 生成文件: tools/custom_byteblock_pb2.py
+// 使用: from custom_byteblock_pb2 import CustomByteBlock, CustomByteBlockE
+
+syntax = "proto3";
+
+package rm_custom;
+
+// 自定义客户端接收的数据块 (机器人 → 自定义客户端)
+// MQTT topic: "CustomByteBlock"
+// 频率: 50 Hz
+// 单包最大: 300 bytes (2.4 kbit)
+message CustomByteBlock {
+  bytes data = 1;
+}
+
+// 自定义客户端上传的数据块 (自定义客户端 → 机器人)
+// MQTT topic: "CustomByteBlockE"
+// 频率: 50 Hz
+// 单包最大: 300 bytes (2.4 kbit)
+message CustomByteBlockE {
+  bytes data = 1;
+}

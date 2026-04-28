@@ -1,0 +1,34 @@
+[Unit]
+Description=RoboMaster Sniper - Serial bridge (ROS /video_stream → 下位机)
+After=rm-sniper-ros.service network.target
+Wants=rm-sniper-ros.service network.target
+Requires=rm-sniper-ros.service
+
+[Service]
+Type=simple
+User=hyc
+WorkingDirectory=/home/hyc/002/Pacific_doorlock_sniper
+
+Environment="HOME=/home/hyc"
+
+# 等待 ROS pipeline 就绪
+ExecStartPre=/bin/bash -c '\
+  source /opt/ros/kilted/setup.bash && \
+  source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash && \
+  for i in $(seq 1 30); do \
+    ros2 topic list 2>/dev/null | grep -q /video_stream && break; \
+    echo "Waiting for /video_stream... ($i/30)"; \
+    sleep 2; \
+  done'
+
+ExecStart=/bin/bash -c '\
+  source /opt/ros/kilted/setup.bash && \
+  source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash && \
+  exec python3 /home/hyc/002/Pacific_doorlock_sniper/tools/serial_bridge.py \
+    --device /dev/ttyACM0 --baud 115200 --robot-id 1 --print-stats'
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

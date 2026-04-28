@@ -55,7 +55,7 @@ def generate_launch_description():
                     {'x264_preset': x264_preset},                        # x264 preset: auto/ultrafast/.../veryslow
                     {'output_fps': 60},                                  # 输出帧率
                     {'packet_size': 300},                                # 固定分包大小(byte)
-                    {'enable_display': True},                            # 编码端调试显示开关
+                    {'enable_display': False},                           # 编码端调试显示 (用 PyQt viewer 替代)
                     {'debug_dump_enable': debug_dump_enable},            # 开启后每N帧保存编码端窗口画面
                     {'debug_dump_every_n_frames': debug_dump_every_n_frames},  # 编码端保存间隔(帧)
                     {'debug_dump_save_raw': dump_save_raw},              # 编码端 Raw 窗口保存开关
@@ -92,7 +92,7 @@ def generate_launch_description():
         name='video_decoder',
         parameters=[
             {'topic': '/video_stream'},      # 订阅的视频流话题
-            {'display': True},               # 解码端显示开关
+            {'display': False},              # 解码端显示 (用 PyQt viewer 替代)
             {'width': encode_size},                  # 解码期望宽度
             {'height': encode_size},                 # 解码期望高度
             {'display_scale': 2},            # 显示放大倍数(300->600)
