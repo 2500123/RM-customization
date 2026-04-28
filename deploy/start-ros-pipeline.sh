@@ -4,7 +4,7 @@
 
 set -e
 
-source /opt/ros/kilted/setup.bash
+source /opt/ros/humble/setup.bash
 source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash
 
 echo "[sniper] Starting ROS pipeline..."

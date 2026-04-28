@@ -28,7 +28,7 @@
 
 ### 1.1 依赖
 
-- ROS 2 Kilted + 海康 MVS SDK
+- ROS 2 Humble + 海康 MVS SDK
 - 已 `colcon build`，项目路径 `/home/hyc/002/Pacific_doorlock_sniper`
 - 串口: `pip3 install pyserial`
 
@@ -76,10 +76,10 @@ systemctl --user start rm-sniper-viewer
 ## 三、串口帧格式
 
 ```
-[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:1B] [data:N B] [CRC8:1B]
+[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:2B LE] [data:N B]
 ```
 
-`data` 为 8B 片段头 + H.264 数据块（158B），下位机直接作为 `CustomByteBlock.data` MQTT publish。
+`data` 为 8B 片段头 + H.264 数据块（288B），下位机直接作为 `CustomByteBlock.data` MQTT publish。
 
 **下位机固件伪代码:**
 

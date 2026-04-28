@@ -1,5 +1,5 @@
 #include "doorlock_sniper/video_encoder_node.hpp"
-#include <cv_bridge/cv_bridge.hpp>
+#include <cv_bridge/cv_bridge.h>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <algorithm>
 #include <cctype>
@@ -22,7 +22,7 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   frame_count_(0),
   display_running_(false)    // 最后初始化
 {
-  constexpr int kVideoPacketBytes = 150;
+  constexpr int kVideoPacketBytes = 280;
 
   param_input_topic_ = this->declare_parameter("input_topic", "/image_raw");
   param_crop_size_ = this->declare_parameter("crop_size", 800);

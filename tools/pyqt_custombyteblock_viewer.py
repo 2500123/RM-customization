@@ -263,7 +263,7 @@ def main() -> int:
         painter.setPen(pen)
         cx, cy = pix.width() // 2, pix.height() // 2
         gap = 0    # 准心缺口半径
-        length = 24  # 准心线长
+        length = 70  # 准心线长
         # 上
         painter.drawLine(cx, cy - gap, cx, cy - length)
         # 下

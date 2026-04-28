@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """RoboMaster 串口桥接: ROS /video_stream → 串口 → 下位机
 
-将 VideoPacket (150B H.264 chunks) 通过串口发给下位机。
+将 VideoPacket (280B H.264 chunks) 通过串口发给下位机。
 下位机固件收到后，将数据包装为 CustomByteBlock 通过 MQTT publish。
 
   串口协议 (Mini PC → 下位机):
-    [SOF: 0xA5] [data_len: 2B] [seq: 1B] [CRC8] [cmd_id: 2B] [data: N B] [CRC16]
-    data_len = 2 (cmd_id) + len(data)
-    CRC8 覆盖 SOF + data_len + seq
-    CRC16 覆盖 全部
+    [SOF: 0xA5] [cmd_id: 2B LE] [data_len: 2B LE] [data: N B]
 
   下行命令 ID: 0x0310 (机器人自定义数据上传)
 
 使用:
-  python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 115200 --robot-id 1
+  python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1
 """
 
 from __future__ import annotations
@@ -24,57 +21,17 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(__file__))
 from custom_byteblock_codec import CODEC_H264, pack_fragment
 
-# ── CRC 校验 ────────────────────────────────────────────────────────
 
-CRC8_TABLE = [0] * 256
-CRC16_TABLE = [0] * 256
+def pack_serial_frame(cmd_id: int, data: bytes) -> bytes:
+    """封装为串口帧 (无 CRC).
 
-def _init_crc8():
-    for i in range(256):
-        crc = i
-        for _ in range(8):
-            crc = (crc << 1) ^ 0x07 if crc & 0x80 else crc << 1
-        CRC8_TABLE[i] = crc & 0xFF
-
-def _init_crc16():
-    for i in range(256):
-        crc = i << 8
-        for _ in range(8):
-            crc = (crc << 1) ^ 0x1021 if crc & 0x8000 else crc << 1
-        CRC16_TABLE[i] = crc & 0xFFFF
-
-_init_crc8()
-_init_crc16()
-
-def crc8(data: bytes) -> int:
-    crc = 0xFF
-    for b in data:
-        crc = CRC8_TABLE[(crc ^ b) & 0xFF]
-    return crc & 0xFF
-
-def crc16(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc = CRC16_TABLE[((crc >> 8) ^ b) & 0xFF] ^ ((crc & 0xFF) << 8)
-    return crc & 0xFFFF
-
-
-def pack_serial_frame(cmd_id: int, data: bytes, seq: int = 0) -> bytes:
-    """封装为串口帧: SOF + len + seq + CRC8 + cmd_id + data + CRC16."""
-    payload = struct.pack("<H", cmd_id) + data          # little-endian cmd_id
-    data_len = len(payload)
-    header = struct.pack("<BB", 0xA5, data_len & 0xFF)  # SOF + len (1B for simplicity)
-    # 简化版: SOF:1B + data_len:1B + data + CRC8 (终端校验)
-    # 如需完整 CRC16，下位机固件可适配
-
-    # 使用简洁帧格式 (便于下位机解析):
-    # SOF:1B + cmd_id:2B + data_len:1B + data:N B + crc8:1B
+    格式: SOF:1B + cmd_id:2B LE + data_len:2B LE + data:N B
+    """
     frame = bytearray()
-    frame.append(0xA5)
-    frame.extend(struct.pack("<H", cmd_id))  # little-endian
-    frame.append(len(data) & 0xFF)
-    frame.extend(data)
-    frame.append(crc8(bytes(frame)))
+    frame.append(0xA5)                              # SOF
+    frame.extend(struct.pack("<H", cmd_id))          # cmd_id LE
+    frame.extend(struct.pack("<H", len(data)))       # data_len LE (2B)
+    frame.extend(data)                               # payload
     return bytes(frame)
 
 
@@ -94,7 +51,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="RoboMaster 串口桥接: ROS → 下位机")
     ap.add_argument("--device", default="/dev/ttyACM0", help="串口设备")
-    ap.add_argument("--baud", type=int, default=115200, help="波特率")
+    ap.add_argument("--baud", type=int, default=921600, help="波特率")
     ap.add_argument("--robot-id", type=int, default=1)
     ap.add_argument("--ros-topic", default="/video_stream")
     ap.add_argument("--print-stats", action="store_true")
@@ -122,7 +79,6 @@ def main() -> int:
     ros_rx = 0
     serial_tx = 0
     drop_count = 0
-    seq = 0
 
     # ── ROS 节点 ──
     class SerialBridgeNode(Node):
@@ -141,10 +97,10 @@ def main() -> int:
             )
 
         def _on_packet(self, msg: VideoPacket) -> None:
-            nonlocal ros_rx, serial_tx, drop_count, seq
+            nonlocal ros_rx, serial_tx, drop_count
             ros_rx += 1
 
-            # 包装 H.264 chunk (8B 片段头 + 150B payload)
+            # 包装 H.264 chunk (8B 片段头 + 280B payload)
             chunk = bytes(msg.data)
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
@@ -153,8 +109,7 @@ def main() -> int:
             )
 
             # 串口帧封装
-            frame = pack_serial_frame(args.cmd_id, frag, seq)
-            seq = (seq + 1) & 0xFF
+            frame = pack_serial_frame(args.cmd_id, frag)
 
             try:
                 ser.write(frame)

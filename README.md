@@ -55,7 +55,7 @@ Pacific_doorlock_sniper/
 │ 海康相机                            │      │                         │
 │   ↓ USB                            │      │ pyqt_custombyteblock_   │
 │ hik_camera → video_encoder         │      │   viewer.py             │
-│              ↓ H.264, 150B/pkt     │      │   ↑ MQTT subscribe      │
+│              ↓ H.264, 280B/pkt     │      │   ↑ MQTT subscribe      │
 │       serial_bridge.py             │      │   CustomByteBlock       │
 │              ↓ 串口帧              │      │   --mode h264_stream    │
 │         下位机 (STM32)              │      │                         │
@@ -75,7 +75,7 @@ Pacific_doorlock_sniper/
 
 ## 3. 环境准备
 
-**系统要求：** Ubuntu 22.04+ · ROS 2 Kilted · 海康 MVS SDK (`/opt/MVS/include` + `/opt/MVS/lib/64`)
+**系统要求：** Ubuntu 22.04+ · ROS 2 Humble · 海康 MVS SDK (`/opt/MVS/include` + `/opt/MVS/lib/64`)
 
 ```bash
 # 基础依赖
@@ -109,13 +109,13 @@ ros2 launch bringup sniper.launch.py
 
 # 终端 2: 串口桥接 (ROS → 下位机)
 source install/setup.bash
-python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 115200 --robot-id 1 --print-stats
+python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 230400 --robot-id 1 --print-stats
 ```
 
 **串口帧格式 (cmd=0x0310，机器人自定义数据上传):**
 
 ```
-[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:1B] [data:N B] [CRC8:1B]
+[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:2B LE] [data:N B]
 ```
 
 > **下位机固件需实现**: 收到 `cmd_id=0x0310` 后将 `data` 作为 `CustomByteBlock.data`，通过 MQTT publish 到 `CustomByteBlock` topic。
@@ -162,7 +162,7 @@ python3 tools/mqtt_custombyteblock_sender.py \
 
 ```bash
 python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
-python3 tools/udp_hevc_receiver.py --display --save-dir ./frames
+#python3 tools/udp_hevc_receiver.py --display --save-dir ./frames
 ```
 
 ---
@@ -172,7 +172,7 @@ python3 tools/udp_hevc_receiver.py --display --save-dir ./frames
 | 功能包 | 节点 | 说明 |
 |--------|------|------|
 | `hik_camera` | `hik_camera` | 海康相机 → `/image_raw` |
-| `doorlock_sniper` | `video_encoder` | H.264 编码 + 运动检测 → `/video_stream` (150B) |
+| `doorlock_sniper` | `video_encoder` | H.264 编码 + 运动检测 → `/video_stream` (280B) |
 | `doorlock_decoder` | `video_decoder` | PyAV 解码 + OpenCV 显示 |
 
 `sniper.launch.py` 可调参数见文件内注释。相机代码源自 [rm-vision](https://github.com/chenjunnn/rm_vision)。
@@ -185,9 +185,10 @@ python3 tools/udp_hevc_receiver.py --display --save-dir ./frames
 
 ## 7. 数据格式
 
-**MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 (codec=2=H264) + 150B chunk`，总 158B < 300B limit。
+**MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 (codec=2=H264) + 280B chunk`，总 288B < 300B limit。
 
-**串口帧:** `[0xA5] [cmd_id:2B LE] [data_len:1B] [data:N B] [CRC8:1B]`，cmd_id=0x0310。
+**串口帧:** `[0xA5] [cmd_id:2B LE] [data_len:2B LE=0x0120] [data:288B]`，cmd_id=0x0310。
+> NOTE: data_len > 255 时，下位机需用 2B 长度字段。见下方注释。
 
 **UDP HEVC:** 8B 帧头 `frame_id:2B frag_idx:2B total_len:4B` (大端) + HEVC 数据。
 

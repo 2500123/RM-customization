@@ -84,7 +84,7 @@ private:
   int param_output_size_ = 400;
   int param_output_fps_ = 60;
   int param_target_bitrate_ = 40;
-  int param_packet_size_ = 150;
+  int param_packet_size_ = 280;
   bool param_static_simplify_ = true;
   int param_motion_threshold_ = 14;
   int param_motion_erode_px_ = 1;

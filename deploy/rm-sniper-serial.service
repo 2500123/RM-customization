@@ -13,7 +13,7 @@ Environment="HOME=/home/hyc"
 
 # 等待 ROS pipeline 就绪
 ExecStartPre=/bin/bash -c '\
-  source /opt/ros/kilted/setup.bash && \
+  source /opt/ros/humble/setup.bash && \
   source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash && \
   for i in $(seq 1 30); do \
     ros2 topic list 2>/dev/null | grep -q /video_stream && break; \
@@ -22,10 +22,10 @@ ExecStartPre=/bin/bash -c '\
   done'
 
 ExecStart=/bin/bash -c '\
-  source /opt/ros/kilted/setup.bash && \
+  source /opt/ros/humble/setup.bash && \
   source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash && \
   exec python3 /home/hyc/002/Pacific_doorlock_sniper/tools/serial_bridge.py \
-    --device /dev/ttyACM0 --baud 115200 --robot-id 1 --print-stats'
+    --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats'
 
 Restart=on-failure
 RestartSec=5

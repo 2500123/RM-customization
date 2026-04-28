@@ -15,7 +15,7 @@ ros2 launch bringup sniper.launch.py
 
 # 终端 2: 串口桥接（ROS → 下位机）
 source install/setup.bash
-python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 115200 --robot-id 1 --print-stats
+python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 230400 --robot-id 1 --print-stats
 ```
 
 **接收端（自定义客户端 PC）**
@@ -144,12 +144,12 @@ systemctl --user start rm-sniper-viewer.service
 ## 串口帧格式（下位机参考）
 
 ```
-[0xA5] [cmd_id:2B=0x0310 LE] [data_len:1B=158] [data:158B] [CRC8:1B]
+[0xA5] [cmd_id:2B=0x0310 LE] [data_len:2B LE=0x0120] [data:288B]
                                        ↑
-                          8B 片段头 + 150B H.264
+                          8B 片段头 + 280B H.264
 ```
 
-> 下位机收到 `cmd=0x0310` → `MQTT_Publish("CustomByteBlock", data, 158, 0)` 原样转发。
+> 下位机收到 `cmd=0x0310` → `MQTT_Publish("CustomByteBlock", data, 288, 0)` 原样转发。
 systemctl --user start rm-sniper-viewer.service
 ```
 
