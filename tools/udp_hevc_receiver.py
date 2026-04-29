@@ -83,7 +83,7 @@ class HevcReassembler:
 def main() -> int:
     ap = argparse.ArgumentParser(description="RoboMaster UDP HEVC 视频流接收器")
     ap.add_argument("--port", type=int, default=3334, help="UDP 监听端口")
-    ap.add_argument("--bind", default="0.0.0.0", help="绑定地址")
+    ap.add_argument("--bind", default="", help="绑定地址 (空=所有网卡, 比赛用 192.168.12.2)")
     ap.add_argument("--display", action="store_true", help="OpenCV 显示解码画面")
     ap.add_argument("--display-scale", type=int, default=1, help="显示缩放倍数")
     ap.add_argument("--stats-only", action="store_true", help="仅统计, 不解码")

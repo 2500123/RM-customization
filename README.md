@@ -1,11 +1,3 @@
-# 【RM2026】部署模式低带宽落点图传 — 五大湖联合大学
-
-[演示视频](https://www.bilibili.com/video/BV12aDMBcEob)　|　[RM 社区 - 开源报告](https://bbs.robomaster.com/article/1883295)
-
-<img width="502" height="323" alt="视频封面" src="https://github.com/user-attachments/assets/a72e1683-be42-44d2-a3ae-7686517728fd" />
-
----
-
 ## 1. 项目简介
 
 RoboMaster 2026 **英雄部署模式**下，官方图传和自定义客户端图传均被切断，但 **`CustomByteBlock` 自定义数据流不受影响**。
@@ -85,7 +77,7 @@ sudo apt install -y mosquitto build-essential cmake pkg-config \
     python3-protobuf protobuf-compiler libopencv-dev \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-ugly gstreamer1.0-libav
+    gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad gstreamer1.0-libav
 
 pip3 install --user PyQt5 pyserial
 
@@ -109,14 +101,15 @@ ros2 launch bringup sniper.launch.py
 
 # 终端 2: 串口桥接 (ROS → 下位机)
 source install/setup.bash
-python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 230400 --robot-id 1 --print-stats
+python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats
 ```
 
 **串口帧格式 (cmd=0x0310，机器人自定义数据上传):**
 
 ```
-[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:2B LE] [data:N B]
+[SOF:0xA5] [data_length:2B LE] [seq:1B] [CRC8:1B] [cmd_id:2B=0x0310 LE] [data:N B]
 ```
+> 帧头 5B 遵循官方协议 V1.3.0，CRC8 多项式 x^8+x^5+x^4+1 初始 0xFF，仅校验前 4 字节
 
 > **下位机固件需实现**: 收到 `cmd_id=0x0310` 后将 `data` 作为 `CustomByteBlock.data`，通过 MQTT publish 到 `CustomByteBlock` topic。
 
@@ -187,9 +180,12 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 
 **MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 (codec=2=H264) + 280B chunk`，总 288B < 300B limit。
 
-**串口帧:** `[0xA5] [cmd_id:2B LE] [data_len:2B LE=0x0120] [data:288B]`，cmd_id=0x0310。
-> NOTE: data_len > 255 时，下位机需用 2B 长度字段。见下方注释。
+**串口帧:** 5B 帧头 `[A5][20 01][seq][CRC8]` + cmd_id `[10 03]` + data `288B` = **295B**，cmd_id=0x0310。
 
 **UDP HEVC:** 8B 帧头 `frame_id:2B frag_idx:2B total_len:4B` (大端) + HEVC 数据。
 
 ```
+
+
+
+选手端防火墙需要关，端口要设3333

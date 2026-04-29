@@ -76,8 +76,9 @@ systemctl --user start rm-sniper-viewer
 ## 三、串口帧格式
 
 ```
-[SOF:0xA5] [cmd_id:2B=0x0310 LE] [data_len:2B LE] [data:N B]
+[SOF:0xA5] [data_length:2B LE] [seq:1B] [CRC8:1B] [cmd_id:2B=0x0310 LE] [data:N B]
 ```
+> 帧头 5B 遵循官方协议 V1.3.0，整帧 = 5 + 2 + 288 = 295B
 
 `data` 为 8B 片段头 + H.264 数据块（288B），下位机直接作为 `CustomByteBlock.data` MQTT publish。
 
