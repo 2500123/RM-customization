@@ -144,9 +144,9 @@ systemctl --user start rm-sniper-viewer.service
 ## 串口帧格式（下位机参考）
 
 ```
-[0xA5] [data_len:2B LE=0x0120] [seq:1B] [CRC8:1B] [cmd_id:2B=0x0310 LE] [data:288B]  整帧295B
+[0xA5] [data_len:2B LE=0x012C] [seq:1B] [CRC8:1B] [cmd_id:2B=0x0310 LE] [data:300B]  整帧307B
                                        ↑
-                          8B 片段头 + 280B H.264
+                          8B 片段头 + 280B H.264 + 12B 补零
 ```
 
 > 下位机收到 `cmd=0x0310` → `MQTT_Publish("CustomByteBlock", data, 288, 0)` 原样转发。

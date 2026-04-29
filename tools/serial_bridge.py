@@ -7,9 +7,9 @@
   串口协议 (Mini PC → 下位机) 遵循官方文档 V1.3.0:
     frame_header: 5B  = SOF(0xA5) + data_length(2B LE) + seq(1B) + CRC8(1B)
     cmd_id: 2B LE (0x0310)
-    data: N B (这里是 288B)
+    data: N B (这里是 300B，已补零到 CustomByteBlock 上限)
 
-  整帧长度 = 5 + 2 + N = 7 + N 字节
+  整帧长度 = 5 + 2 + N = 7 + 300 = 307 字节
 
 使用:
   python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1
@@ -145,13 +145,16 @@ def main() -> int:
             nonlocal ros_rx, serial_tx, drop_count, seq_counter
             ros_rx += 1
 
-            # 包装 H.264 chunk (8B 片段头 + 280B payload)
+            # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
             chunk = bytes(msg.data)
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
                 codec=CODEC_H264, flags=0, total_len=0, chunk=chunk,
             )
+            # 补零到 300B，使 data_length=300，MCU 直转无需再补
+            if len(frag) < 300:
+                frag = frag + b'\x00' * (300 - len(frag))
 
             # 串口帧封装（传入当前 seq，每次递增，循环使用即可）
             frame = pack_serial_frame(args.cmd_id, frag, seq=seq_counter)

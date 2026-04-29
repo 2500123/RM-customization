@@ -180,7 +180,8 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 
 **MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 (codec=2=H264) + 280B chunk`，总 288B < 300B limit。
 
-**串口帧:** 5B 帧头 `[A5][20 01][seq][CRC8]` + cmd_id `[10 03]` + data `288B` = **295B**，cmd_id=0x0310。
+**串口帧:** 5B 帧头 `[A5][2C 01][seq][CRC8]` + cmd_id `[10 03]` + data `300B` = **307B**，cmd_id=0x0310。
+> PC 侧补零到 300B，MCU 直转无需再补
 
 **UDP HEVC:** 8B 帧头 `frame_id:2B frag_idx:2B total_len:4B` (大端) + HEVC 数据。
 
