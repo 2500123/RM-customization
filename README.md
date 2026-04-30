@@ -13,7 +13,7 @@ RoboMaster 2026 **英雄部署模式**下，官方图传和自定义客户端图
 | 链路 | 串口 (下位机 `0x0310`) → 裁判系统 MQTT `CustomByteBlock`，300B/pkt，50Hz |
 | 编码 | H.264 (x264)，`veryslow` 最大化压缩 |
 | 码率 | 目标 10 kB/s，硬限制 14 kB/s |
-| 英雄模式 | ✅ 不受影响 |
+| 部署模式 | ✅ 不受影响 |
 
 **项目结构**
 
@@ -178,15 +178,9 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 
 ## 7. 数据格式
 
-**MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 (codec=2=H264) + 280B chunk`，总 288B < 300B limit。
+**MQTT CustomByteBlock:** `0x0A + varint(len) + data`，data 为 `8B 片段头 + 280B H.264 + 12B 补零` = **300B**，protobuf 编码后约 303B。
 
 **串口帧:** 5B 帧头 `[A5][2C 01][seq][CRC8]` + cmd_id `[10 03]` + data `300B` = **307B**，cmd_id=0x0310。
 > PC 侧补零到 300B，MCU 直转无需再补
 
 **UDP HEVC:** 8B 帧头 `frame_id:2B frag_idx:2B total_len:4B` (大端) + HEVC 数据。
-
-```
-
-
-
-选手端防火墙需要关，端口要设3333

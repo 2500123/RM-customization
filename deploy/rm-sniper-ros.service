@@ -1,7 +1,7 @@
 [Unit]
 Description=RoboMaster Sniper - ROS pipeline (hik_camera + video_encoder)
-After=network.target
-Wants=network.target
+After=local-fs.target
+Wants=local-fs.target
 
 [Service]
 Type=simple

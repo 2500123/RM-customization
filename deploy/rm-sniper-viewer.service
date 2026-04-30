@@ -1,7 +1,7 @@
 [Unit]
 Description=RoboMaster Sniper - MQTT Viewer (receive + H.264 decode + GUI)
-After=network.target
-Wants=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

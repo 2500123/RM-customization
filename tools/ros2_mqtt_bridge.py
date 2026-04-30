@@ -121,7 +121,7 @@ def main() -> int:
     print(f"[bridge] Robot ID={args.robot_id}")
     print(f"[bridge] ROS {args.ros_topic} → MQTT {args.host}:{args.port}/{args.topic}")
     print(f"[bridge] Proto: {'protobuf library' if using_protobuf_library() else 'manual varint'}")
-    print(f"[bridge] VideoPacket payload: 150 bytes → fragment: 158 bytes → CustomByteBlock: ~162 bytes (< {MAX_CUSTOM_BYTEBLOCK_BYTES}B)")
+    print(f"[bridge] VideoPacket payload: 280 bytes → fragment: 288 bytes → CustomByteBlock wire: ~291 bytes (< {MAX_CUSTOM_BYTEBLOCK_BYTES}B)")
 
     # MQTT client
     client = mqtt.Client(client_id=client_id)
@@ -184,7 +184,7 @@ def main() -> int:
         dm = mqtt_tx - last_mqtt_tx
         dd = drop_count - last_drop
         rate = dr / dt
-        bw = (dm * 162) / dt  # ~162 bytes per MQTT message
+        bw = (dm * 291) / dt  # ~291 bytes per MQTT message
         print(
             f"[bridge] ROS rx={ros_rx} (+{dr}, {rate:.0f} pkt/s) | "
             f"MQTT tx={mqtt_tx} (+{dm}, {bw:.0f} B/s) | "
