@@ -184,3 +184,7 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 > PC 侧补零到 300B，MCU 直转无需再补
 
 **UDP HEVC:** 8B 帧头 `frame_id:2B frag_idx:2B total_len:4B` (大端) + HEVC 数据。
+ 
+ ping 192.168.12.1 
+ nc -zv 192.168.12.1 3333
+ 
