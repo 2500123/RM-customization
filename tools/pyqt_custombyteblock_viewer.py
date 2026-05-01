@@ -432,11 +432,11 @@ def main() -> int:
                             hevc_parse_errors += 1
                     continue
 
-                # ── MQTT modes: 注意此处直接使用 payload 作为裸数据（288 字节） ──
+                # ── MQTT modes: 提取 protobuf 内部的 CustomByteBlock.data ──
                 rx_msgs += 1
 
-                # ========== 关键修改 2: 直接使用 pb 作为 data，不调用 parse_cbb ==========
-                data = pb   # 原代码: data = parse_cbb(pb)
+                # 先用 parse_cbb 剥掉 protobuf 外壳
+                data = parse_cbb(pb)
                 if not data:
                     continue
                 last_data_len = len(data)

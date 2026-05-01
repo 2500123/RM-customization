@@ -168,12 +168,10 @@ def main()->int:
                 cl=int(args.h264_chunk_len)
                 if h264_offset+cl>len(h264_data): h264_offset=0
                 raw=h264_data[h264_offset:h264_offset+cl]
-                # 不再补零——补零会引入虚假 start code (00 00 00 01) 破坏 H.264 解析
                 h264_offset+=cl
                 data=pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=len(raw),chunk=raw)
                 frame_id=(frame_id+1)&0xFFFF; pub_chunks+=1
             else:
-                cl=int(args.h264_chunk_len)
                 if len(h264_chunk_buf)<max(int(args.send_hz*0.3),5):
                     ok,bgr=h264_cap.read()
                     if ok and bgr is not None:
@@ -184,12 +182,22 @@ def main()->int:
                             if not pkts:
                                 print(f"[encoder] WARN: encode returned 0 packets", flush=True)
                             for pkt in pkts:
-                                h264_enc_bytes+=len(pkt)
-                                for off in range(0,len(pkt),cl):
-                                    c=pkt[off:off+cl]
-                                    # 不再补零——补零会引入虚假 start code 破坏 H.264 解析
-                                    h264_chunk_buf.append(pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=len(c),chunk=c))
-                                    pub_chunks+=1
+                                h264_enc_bytes += len(pkt)
+                                total_len = len(pkt)
+                                # 每个 encoded packet 作为一个完整 fragment，不切碎
+                                # (切碎会导致 NAL 单元从中间断开，解码器无法解析)
+                                # 超过 max_data_bytes 时截断并警告
+                                frag = pack_fragment(
+                                    frame_id=frame_id, frag_idx=0, frag_cnt=1,
+                                    codec=CODEC_H264, flags=0, total_len=total_len, chunk=pkt)
+                                if len(frag) > md - 3:  # 3 = protobuf 包装开销
+                                    print(f"[sender] WARN: frame_id={frame_id} packet {len(pkt)}B too large, truncating", flush=True)
+                                    pkt = pkt[:md - 3 - 8]  # 8 = fragment header
+                                    frag = pack_fragment(
+                                        frame_id=frame_id, frag_idx=0, frag_cnt=1,
+                                        codec=CODEC_H264, flags=0, total_len=len(pkt), chunk=pkt)
+                                h264_chunk_buf.append(frag)
+                                pub_chunks += 1
                             h264_frame_count+=1; frame_id=(frame_id+1)&0xFFFF
                         except Exception as e:
                             print(f"[encoder] ERROR: {e}", flush=True)
