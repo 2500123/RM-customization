@@ -616,6 +616,10 @@ void VideoEncoderNode::pull_stream_and_packetize()
       bool need_start_code = true;  // next chunk must begin with a start code
       while (true) {
         size_t buf_size = stream_buffer_.size();
+        if (buf_size == 0) {
+          need_start_code = true;               // fresh start next round
+          break;
+        }
 
         // ── 带宽限速 ──
         const int64_t now_ns = this->now().nanoseconds();
@@ -662,10 +666,17 @@ void VideoEncoderNode::pull_stream_and_packetize()
           if (next_sc < hi) split = next_sc;         // 找到 → 切在起始码前
         }
         if (split < 4) split = std::min(packet_bytes, buf_size);
+        if (split == 0) {
+          need_start_code = true;
+          break;
+        }
 
         // ── 下一块的模式 ──
-        need_start_code = (split < buf_size &&
-                           find_sc(split, std::min(split + 4, buf_size)) == split);
+        if (split < buf_size) {
+          need_start_code = (find_sc(split, std::min(split + 4, buf_size)) == split);
+        } else {
+          need_start_code = true;                   // 吃干净了，下轮从头来
+        }
 
         // ── 发送 ──
         doorlock_sniper::msg::VideoPacket pkt;
