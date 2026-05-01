@@ -603,17 +603,15 @@ void VideoEncoderNode::pull_stream_and_packetize()
       // decoder errors (co‑located POCs, missing reference picture, green/blurry output).
       //
       // ── helper: find next Annex‑B start code in [start, end) ──
-      // Prefer the 4-byte form (00 00 00 01) which x264 emits; accept 3-byte
-      // (00 00 01) only at position 0 (continuation of an already‑seen run).
+      // H.264 uses emulation prevention bytes, so 00 00 00 01 and 00 00 01
+      // can only appear as genuine start codes — never inside NAL payloads.
+      // Both forms are matched unconditionally.
       auto find_sc = [&](size_t start, size_t end) -> size_t {
         for (size_t i = start; i + 3 <= end; ++i) {
           if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
-            // 4‑byte start code: 00 00 00 01
-            if (i + 4 <= end && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1)
-              return i;
-            // 3‑byte start code: 00 00 01 (only trust at buffer start where
-            // the previous chunk ended with 00 00, leaving a partial prefix)
-            if (i == 0 && stream_buffer_[i + 2] == 1)
+            if (stream_buffer_[i + 2] == 1 ||
+                (i + 4 <= end &&
+                 stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1))
               return i;
           }
         }
