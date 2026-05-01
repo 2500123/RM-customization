@@ -212,8 +212,7 @@ def main() -> int:
 
     qsize_expanding = QtWidgets.QSizePolicy.Expanding if hasattr(QtWidgets.QSizePolicy, "Expanding") else QtWidgets.QSizePolicy.Policy.Expanding
 
-    # 使用唯一 client ID，避免与下位机 MCU 的 MQTT 客户端冲突
-    client_id = f"rm-viewer-{args.robot_id}"
+    client_id = "1"
 
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QWidget()

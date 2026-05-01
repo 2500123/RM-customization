@@ -610,12 +610,42 @@ void VideoEncoderNode::pull_stream_and_packetize()
       stream_buffer_.resize(old_size + map.size);
       memcpy(stream_buffer_.data() + old_size, map.data, map.size);
 
-      // Simple 280‑B blind slicing — safe because encoder uses robust params:
-      //   bframes=0  ref=1  short GOP  → single-reference, no reordering
-      // PyAV's codec.parse() handles partial NAL data by maintaining state.
+      // 280‑B chunking with start‑code alignment.
+      // Before emitting, skip to the next Annex‑B start code (00 00 00 01 or
+      // 00 00 01) so the decoder always sees valid NAL boundaries.
+      // H.264 emulation prevention guarantees these patterns never appear inside
+      // NAL payloads, so matching them is unconditionally safe.
+      // If no start code found in the first 280 B, emit from current position.
       while (stream_buffer_.size() >= packet_bytes) {
+        // ── align to next start code ──
+        {
+          size_t buf_size = stream_buffer_.size();
+          size_t limit = buf_size < packet_bytes ? buf_size : packet_bytes;
+          size_t sc = limit;  // default: not found
+          for (size_t i = 0; i + 3 <= limit; ++i) {
+            if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
+              if (stream_buffer_[i + 2] == 1 ||
+                  (i + 4 <= limit &&
+                   stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1)) {
+                sc = i;
+                break;
+              }
+            }
+          }
+          if (sc > 0 && sc < limit) {
+            // skip garbage before start code
+            memmove(stream_buffer_.data(), stream_buffer_.data() + sc,
+                    buf_size - sc);
+            stream_buffer_.resize(buf_size - sc);
+          }
+        }
+
+        if (stream_buffer_.size() < packet_bytes) break;
+
+        // ── 带宽限速 ──
         const int64_t now_ns = this->now().nanoseconds();
-        while (!sent_window_.empty() && (now_ns - sent_window_.front().first) > window_ns) {
+        while (!sent_window_.empty() &&
+               (now_ns - sent_window_.front().first) > window_ns) {
           sent_window_bytes_ -= sent_window_.front().second;
           sent_window_.pop_front();
         }
