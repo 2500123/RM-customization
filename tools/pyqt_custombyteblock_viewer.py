@@ -255,8 +255,6 @@ def main() -> int:
     last_frame_id: Optional[int] = None
     gap_count = 0
     lost_pkts = 0
-    # ── NAL accumulation buffer (same approach as decoder_node) ──
-    nal_buf = bytearray()
 
     payload_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=2000)
 
@@ -317,7 +315,6 @@ def main() -> int:
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
         nonlocal last_frame_id, gap_count, lost_pkts
-        nonlocal nal_buf
         rx_msgs = bad_msgs = 0
         h264_frames = 0
         h264_parse_errors = 0
@@ -331,7 +328,6 @@ def main() -> int:
         last_data_head = b""
         last_frame_id = None
         gap_count = lost_pkts = 0
-        nal_buf.clear()
         try:
             while True:
                 payload_queue.get_nowait()
@@ -375,7 +371,6 @@ def main() -> int:
         nonlocal last_img, last_data_len, last_data_head
         nonlocal _h264_codec
         nonlocal last_frame_id, gap_count, lost_pkts
-        nonlocal nal_buf
         drained = 0
         while drained < 200:
             try:
@@ -481,60 +476,29 @@ def main() -> int:
                     if not chunk:
                         continue
 
-                    # Accumulate in NAL buffer
-                    nal_buf.extend(chunk)
-                    if len(nal_buf) > 280 * 20:
-                        nal_buf.clear()
-                        continue
-
-                    # Extract complete NALs between start codes
-                    while len(nal_buf) >= 4:
-                        buf = nal_buf
-                        # Find first start code
-                        sc = len(buf)
-                        for i in range(len(buf) - 2):
-                            if buf[i] == 0 and buf[i + 1] == 0:
-                                if buf[i + 2] == 1 or (i + 3 < len(buf) and buf[i + 2] == 0 and buf[i + 3] == 1):
-                                    sc = i; break
-                        if sc == len(buf):
-                            break           # no start code — wait for more
-                        if sc > 0:
-                            del buf[:sc]    # discard garbage before first SC
-                            continue
-                        sc_len = 4 if (len(buf) >= 4 and buf[2] == 0 and buf[3] == 1) else 3
-                        next_sc = len(buf)
-                        for i in range(sc_len, len(buf) - 2):
-                            if buf[i] == 0 and buf[i + 1] == 0:
-                                if buf[i + 2] == 1 or (i + 3 < len(buf) and buf[i + 2] == 0 and buf[i + 3] == 1):
-                                    next_sc = i; break
-                        if next_sc == len(buf):
-                            break           # NAL spans into future chunks
-                        nal = bytes(buf[:next_sc])
-                        del buf[:next_sc]
-
-                        # Feed to PyAV
-                        try:
-                            packets = _h264_codec.parse(nal)
-                            for pkt in packets:
-                                try:
-                                    frames = _h264_codec.decode(pkt)
-                                except av.AVError:
-                                    h264_parse_errors += 1
+                    # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
+                    try:
+                        packets = _h264_codec.parse(chunk)
+                        for pkt in packets:
+                            try:
+                                frames = _h264_codec.decode(pkt)
+                            except av.AVError:
+                                h264_parse_errors += 1
+                                continue
+                            for frame in frames:
+                                if frame is None or frame.width == 0 or frame.height == 0:
                                     continue
-                                for frame in frames:
-                                    if frame is None or frame.width == 0 or frame.height == 0:
-                                        continue
-                                    arr = frame.to_ndarray(format="bgr24")
-                                    if arr is None or arr.size == 0:
-                                        continue
-                                    h264_frames += 1
-                                    h264_last_frame_time = time.monotonic()
-                                    h, w, ch = arr.shape
-                                    qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
-                                    last_img = qimg.copy()
-                                    redraw()
-                        except av.AVError:
-                            h264_parse_errors += 1
+                                arr = frame.to_ndarray(format="bgr24")
+                                if arr is None or arr.size == 0:
+                                    continue
+                                h264_frames += 1
+                                h264_last_frame_time = time.monotonic()
+                                h, w, ch = arr.shape
+                                qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
+                                last_img = qimg.copy()
+                                redraw()
+                    except av.AVError:
+                        h264_parse_errors += 1
                     continue
             except Exception:
                 bad_msgs += 1

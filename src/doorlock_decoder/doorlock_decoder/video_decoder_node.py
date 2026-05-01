@@ -53,7 +53,6 @@ class VideoDecoderNode(Node):
         # 流式解码器状态
         self.codec = None
         self._create_codec()
-        self.nal_buf = bytearray()       # NAL accumulation buffer
         self.frame_count = 0
         self.packet_count = 0
         self.parsed_packet_count = 0
@@ -81,20 +80,8 @@ class VideoDecoderNode(Node):
         self.codec.flags |= av.codec.context.Flags.LOW_DELAY
 
     def _reset_codec(self, reason=''):
-        self.nal_buf.clear()
         self._create_codec()
         self.get_logger().warn(f'Reset codec ({reason})')
-
-    @staticmethod
-    def _find_sc(data: bytes, start: int = 0) -> int:
-        """Return offset of next Annex‑B start code, or len(data) if none."""
-        for i in range(start, len(data) - 2):
-            if data[i] == 0 and data[i + 1] == 0:
-                if data[i + 2] == 1:
-                    return i
-                if i + 3 < len(data) and data[i + 2] == 0 and data[i + 3] == 1:
-                    return i
-        return len(data)
 
     def _handle_decoded_frame(self, frame):
         if frame is None or frame.width == 0 or frame.height == 0:
@@ -112,7 +99,7 @@ class VideoDecoderNode(Node):
             self.get_logger().info(f'Decoded {self.frame_count} frames')
 
     def _packet_callback(self, msg):
-        """Accumulate 280B chunks, extract NALs, feed complete NALs to PyAV."""
+        """Feed raw 280B chunks to PyAV — internal annex-B parser handles NAL assembly."""
         self.packet_count += 1
 
         # 丢包检测
@@ -124,54 +111,20 @@ class VideoDecoderNode(Node):
             self.gap_count += 1
         self.last_seq = msg.sequence_id
 
-        # Append chunk to accumulation buffer
-        chunk = bytes(msg.data)
-        self.nal_buf.extend(chunk)
+        chunk = bytes(msg.data)  # 280B Annex-B
 
-        # Extract complete NALs and feed to PyAV
-        while len(self.nal_buf) >= 4:
-            buf = self.nal_buf
-
-            # Find first start code
-            sc = self._find_sc(buf)
-            if sc == len(buf):
-                break               # no start code — wait for more data
-            if sc > 0:
-                # Discard leading garbage before first start code
-                del buf[:sc]
-                continue
-            # sc == 0: start code at position 0
-
-            # Determine start-code length (3 or 4 bytes)
-            sc_len = 4 if (len(buf) >= 4 and buf[2] == 0 and buf[3] == 1) else 3
-
-            # Find next start code (NAL boundary)
-            next_sc = self._find_sc(buf, sc_len)
-            if next_sc == len(buf):
-                break  # NAL spans into future chunks
-
-            # Extract complete NAL
-            nal = bytes(buf[:next_sc])
-            del buf[:next_sc]
-
-            # Feed to PyAV
-            try:
-                packets = self.codec.parse(nal)
-                self.parsed_packet_count += len(packets)
-                for pkt in packets:
-                    try:
-                        frames = self.codec.decode(pkt)
-                    except av.AVError:
-                        continue
-                    for frame in frames:
-                        self._handle_decoded_frame(frame)
-            except av.AVError as e:
-                self.get_logger().debug(f'Parse error: {e!s}')
-
-        # Prevent unbounded buffer growth (corrupted stream guard)
-        if len(self.nal_buf) > 280 * 20:
-            self.get_logger().warn(f'NAL buffer overflow {len(self.nal_buf)}B, resetting')
-            self._reset_codec('buffer overflow')
+        try:
+            packets = self.codec.parse(chunk)
+            self.parsed_packet_count += len(packets)
+            for pkt in packets:
+                try:
+                    frames = self.codec.decode(pkt)
+                except av.AVError:
+                    continue
+                for frame in frames:
+                    self._handle_decoded_frame(frame)
+        except av.AVError as e:
+            self.get_logger().debug(f'Parse error: {e!s}')
 
         if self.packet_count % 600 == 0:
             self.get_logger().info(
