@@ -96,7 +96,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="RoboMaster 串口桥接: ROS → 下位机")
     ap.add_argument("--device", default="/dev/ttyACM0", help="串口设备")
     ap.add_argument("--baud", type=int, default=921600, help="波特率")
-    ap.add_argument("--robot-id", type=int, default=01)
+    ap.add_argument("--robot-id", type=int, default=1)
     ap.add_argument("--ros-topic", default="/video_stream")
     ap.add_argument("--print-stats", action="store_true")
     ap.add_argument("--cmd-id", type=int, default=0x0310, help="下位机命令ID")
