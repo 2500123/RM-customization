@@ -596,77 +596,92 @@ void VideoEncoderNode::pull_stream_and_packetize()
       stream_buffer_.resize(old_size + map.size);
       memcpy(stream_buffer_.data() + old_size, map.data, map.size);
 
-      // NAL-aware chunking: ensure each emitted chunk starts at an Annex‑B start code.
+      // NAL-aware chunking: each chunk either starts at an Annex‑B start code
+      // ("start" mode) or is a continuation of an incomplete NAL ("continuation" mode).
       // Without this, blind 280‑B slicing cuts NAL units in the middle, causing
       // decoder errors (co‑located POCs, missing reference picture, green/blurry output).
-      while (true) {
-        size_t buf_size = stream_buffer_.size();
-        if (buf_size < 4) break;                     // need at least a start code
-
-        // 1) 确保 stream_buffer 起始于 Annex‑B 起始码（00 00 00 01 或 00 00 01）
-        size_t first_sc = buf_size;
-        for (size_t i = 0; i + 3 <= buf_size; ++i) {
-          if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
-            if (stream_buffer_[i + 2] == 1) { first_sc = i; break; }
-            if (i + 4 <= buf_size &&
-                stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1) {
-              first_sc = i; break;
-            }
-          }
-        }
-        if (first_sc > 0) {
-          if (first_sc == buf_size) {                // no start code at all
-            stream_buffer_.clear();
-            break;
-          }
-          memmove(stream_buffer_.data(), stream_buffer_.data() + first_sc,
-                  buf_size - first_sc);
-          stream_buffer_.resize(buf_size - first_sc);
-          buf_size = stream_buffer_.size();
-        }
-
-        if (buf_size < 4) break;
-
-        // 2) 在 [packet_bytes*2/3, packet_bytes*3/2] 范围内寻找下一个起始码作为分割点
-        size_t lo = std::max(packet_bytes * 2 / 3, (size_t)4);
-        size_t hi = std::min(packet_bytes + packet_bytes / 2, buf_size);
-        size_t split = packet_bytes;                 // fallback: 取满 280 B
-        for (size_t i = lo; i + 3 <= hi; ++i) {
+      //
+      // ── helper: find next Annex‑B start code in [start, end) ──
+      auto find_sc = [&](size_t start, size_t end) -> size_t {
+        for (size_t i = start; i + 3 <= end; ++i) {
           if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
             if (stream_buffer_[i + 2] == 1 ||
-                (i + 4 <= hi && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1)) {
-              split = i;                             // cut right before this start code
-              break;
-            }
+                (i + 4 <= end && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1))
+              return i;
           }
         }
-        size_t take = std::min(split, buf_size);
-        if (take < 4) take = std::min(packet_bytes, buf_size);
+        return end;  // not found
+      };
 
-        // 3) 带宽限速检查
+      bool need_start_code = true;  // next chunk must begin with a start code
+      while (true) {
+        size_t buf_size = stream_buffer_.size();
+
+        // ── 带宽限速 ──
         const int64_t now_ns = this->now().nanoseconds();
         while (!sent_window_.empty() &&
                (now_ns - sent_window_.front().first) > window_ns) {
           sent_window_bytes_ -= sent_window_.front().second;
           sent_window_.pop_front();
         }
-        if (sent_window_bytes_ + take > window_limit_bytes) break;
+        if (sent_window_bytes_ >= window_limit_bytes) break;
 
-        // 4) 发布
+        if (need_start_code) {
+          // ── 模式 START：必须从起始码开始 ──
+          if (buf_size < 4) break;
+          size_t sc = find_sc(0, buf_size);
+          if (sc == buf_size) {
+            if (buf_size > packet_bytes * 4) {
+              // 积压太多却没有起始码 → 乱码，安全清理
+              stream_buffer_.clear();
+            }
+            break;  // 等更多数据
+          }
+          if (sc > 0) {
+            // 跳过起始码前的垃圾（上一帧残留）
+            memmove(stream_buffer_.data(), stream_buffer_.data() + sc,
+                    buf_size - sc);
+            stream_buffer_.resize(buf_size - sc);
+            buf_size = stream_buffer_.size();
+          }
+        }
+
+        // ── 确定取多长 ──
+        size_t lo = std::max(packet_bytes * 4 / 5, (size_t)1u);
+        size_t hi = std::min(packet_bytes * 6 / 5, buf_size);
+        size_t split = std::min(packet_bytes, buf_size);
+
+        if (need_start_code) {
+          // 从起始码开始的 chunk：在 [lo, hi] 范围找下一个起始码作为切分点
+          size_t next_sc = find_sc(lo > buf_size ? buf_size : lo, hi);
+          if (next_sc < hi) split = next_sc;         // 刚好切在下一个起始码前
+          // else: 没找到 → 用 packet_bytes，延续模式
+        } else {
+          // 延续模式：尽量找到下一个起始码，否则取 packet_bytes
+          size_t next_sc = find_sc(1, hi);
+          if (next_sc < hi) split = next_sc;         // 找到 → 切在起始码前
+        }
+        if (split < 4) split = std::min(packet_bytes, buf_size);
+
+        // ── 下一块的模式 ──
+        need_start_code = (split < buf_size &&
+                           find_sc(split, std::min(split + 4, buf_size)) == split);
+
+        // ── 发送 ──
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
         pkt.data.fill(0);
-        memcpy(pkt.data.data(), stream_buffer_.data(), take);
+        memcpy(pkt.data.data(), stream_buffer_.data(), split);
 
         packet_pub_->publish(pkt);
-        sent_window_.emplace_back(now_ns, take);
-        sent_window_bytes_ += take;
+        sent_window_.emplace_back(now_ns, split);
+        sent_window_bytes_ += split;
 
-        memmove(stream_buffer_.data(), stream_buffer_.data() + take,
-                stream_buffer_.size() - take);
-        stream_buffer_.resize(stream_buffer_.size() - take);
+        memmove(stream_buffer_.data(), stream_buffer_.data() + split,
+                stream_buffer_.size() - split);
+        stream_buffer_.resize(stream_buffer_.size() - split);
       }
 
       // 排队时延上限：防止突发造成长延时。超限时丢弃旧数据。
