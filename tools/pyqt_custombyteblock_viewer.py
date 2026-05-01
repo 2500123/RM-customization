@@ -251,6 +251,12 @@ def main() -> int:
     last_img: Optional[object] = None
     last_data_len = 0
     last_data_head = b""
+    # ── 丢包 / 延迟诊断 ──
+    last_frame_id: Optional[int] = None
+    gap_count = 0
+    lost_pkts = 0
+    # ── NAL accumulation buffer (same approach as decoder_node) ──
+    nal_buf = bytearray()
 
     payload_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=2000)
 
@@ -285,11 +291,12 @@ def main() -> int:
             return
         last_status_ts = now
         if args.mode == "h264_stream":
+            loss_pct = f"{(lost_pkts / max(rx_msgs, 1) * 100):.1f}%" if rx_msgs > 0 else "0%"
             status_label.setText(
-                f"MQTT {args.host}:{args.port} topic={args.topic} mode={args.mode} | "
-                f"rx={rx_msgs} bad={bad_msgs} parsed_frames={h264_frames} parse_errs={h264_parse_errors} "
-                f"stall_resets={h264_stall_resets} | "
-                f"data_len={last_data_len} head={last_data_head.hex()}"
+                f"MQTT {args.host}:{args.port} topic={args.topic} | "
+                f"rx={rx_msgs} bad={bad_msgs} lost={lost_pkts}({loss_pct}) gaps={gap_count} "
+                f"frames={h264_frames} errs={h264_parse_errors} stall={h264_stall_resets} | "
+                f"data={last_data_len}B"
             )
         elif args.mode == "hevc_udp":
             status_label.setText(
@@ -309,6 +316,8 @@ def main() -> int:
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
+        nonlocal last_frame_id, gap_count, lost_pkts
+        nonlocal nal_buf
         rx_msgs = bad_msgs = 0
         h264_frames = 0
         h264_parse_errors = 0
@@ -320,6 +329,9 @@ def main() -> int:
         last_img = None
         last_data_len = 0
         last_data_head = b""
+        last_frame_id = None
+        gap_count = lost_pkts = 0
+        nal_buf.clear()
         try:
             while True:
                 payload_queue.get_nowait()
@@ -361,7 +373,9 @@ def main() -> int:
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
-        nonlocal _h264_codec                       # stall recovery 会重建 codec
+        nonlocal _h264_codec
+        nonlocal last_frame_id, gap_count, lost_pkts
+        nonlocal nal_buf
         drained = 0
         while drained < 200:
             try:
@@ -444,7 +458,6 @@ def main() -> int:
 
                 # ── h264_stream ──
                 if args.mode == "h264_stream":
-                    # 调用 unpack_fragment 提取 H.264 chunk
                     try:
                         hdr, chunk = unpack_fragment(data)
                     except Exception:
@@ -454,37 +467,74 @@ def main() -> int:
                         bad_msgs += 1
                         continue
 
+                    # ── 丢包检测 ──
+                    if last_frame_id is not None:
+                        diff = (hdr.frame_id - last_frame_id) & 0xFFFF
+                        if diff > 1:
+                            gap_count += 1
+                            lost_pkts += diff - 1
+                    last_frame_id = hdr.frame_id
+
                     # ── 零填充去除 ──
-                    # total_len 由桥接端设为 280（精确值）；直接按 total_len 截断。
-                    # 串口路径下 chunk 可能含补零尾（serial_bridge 补到 300B），
-                    # total_len 精确告知有效数据长度，比 rstrip 安全（不会切除合法零字节）。
                     if hdr.total_len > 0 and hdr.total_len <= len(chunk):
                         chunk = chunk[:hdr.total_len]
                     if not chunk:
                         continue
 
-                    try:
-                        parsed_packets = _h264_codec.parse(chunk)
-                        for packet in parsed_packets:
-                            try:
-                                frames = _h264_codec.decode(packet)
-                            except av.AVError:
-                                h264_parse_errors += 1
-                                continue
-                            for frame in frames:
-                                if frame is None or frame.width == 0 or frame.height == 0:
+                    # Accumulate in NAL buffer
+                    nal_buf.extend(chunk)
+                    if len(nal_buf) > 280 * 20:
+                        nal_buf.clear()
+                        continue
+
+                    # Extract complete NALs between start codes
+                    while len(nal_buf) >= 4:
+                        buf = nal_buf
+                        # Find first start code
+                        sc = len(buf)
+                        for i in range(len(buf) - 2):
+                            if buf[i] == 0 and buf[i + 1] == 0:
+                                if buf[i + 2] == 1 or (i + 3 < len(buf) and buf[i + 2] == 0 and buf[i + 3] == 1):
+                                    sc = i; break
+                        if sc == len(buf):
+                            break           # no start code — wait for more
+                        if sc > 0:
+                            del buf[:sc]    # discard garbage before first SC
+                            continue
+                        sc_len = 4 if (len(buf) >= 4 and buf[2] == 0 and buf[3] == 1) else 3
+                        next_sc = len(buf)
+                        for i in range(sc_len, len(buf) - 2):
+                            if buf[i] == 0 and buf[i + 1] == 0:
+                                if buf[i + 2] == 1 or (i + 3 < len(buf) and buf[i + 2] == 0 and buf[i + 3] == 1):
+                                    next_sc = i; break
+                        if next_sc == len(buf):
+                            break           # NAL spans into future chunks
+                        nal = bytes(buf[:next_sc])
+                        del buf[:next_sc]
+
+                        # Feed to PyAV
+                        try:
+                            packets = _h264_codec.parse(nal)
+                            for pkt in packets:
+                                try:
+                                    frames = _h264_codec.decode(pkt)
+                                except av.AVError:
+                                    h264_parse_errors += 1
                                     continue
-                                arr = frame.to_ndarray(format="bgr24")
-                                if arr is None or arr.size == 0:
-                                    continue
-                                h264_frames += 1
-                                h264_last_frame_time = time.monotonic()
-                                h, w, ch = arr.shape
-                                qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
-                                last_img = qimg.copy()
-                                redraw()
-                    except av.AVError:
-                        h264_parse_errors += 1
+                                for frame in frames:
+                                    if frame is None or frame.width == 0 or frame.height == 0:
+                                        continue
+                                    arr = frame.to_ndarray(format="bgr24")
+                                    if arr is None or arr.size == 0:
+                                        continue
+                                    h264_frames += 1
+                                    h264_last_frame_time = time.monotonic()
+                                    h, w, ch = arr.shape
+                                    qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
+                                    last_img = qimg.copy()
+                                    redraw()
+                        except av.AVError:
+                            h264_parse_errors += 1
                     continue
             except Exception:
                 bad_msgs += 1

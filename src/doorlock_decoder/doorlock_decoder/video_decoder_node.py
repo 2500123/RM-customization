@@ -12,7 +12,7 @@ from pathlib import Path
 class VideoDecoderNode(Node):
     def __init__(self):
         super().__init__('video_decoder_node')
-        
+
         # 参数
         self.declare_parameter('topic', '/video_stream')
         self.declare_parameter('display', True)
@@ -26,7 +26,7 @@ class VideoDecoderNode(Node):
         self.declare_parameter('debug_dump_every_n_frames', 20)
         self.declare_parameter('debug_dump_save_decoder', True)
         self.declare_parameter('debug_dump_dir', 'sniper_debug_imgs')
-        
+
         topic = self.get_parameter('topic').value
         self.display = self.get_parameter('display').value
         self.width = int(self.get_parameter('width').value)
@@ -52,50 +52,56 @@ class VideoDecoderNode(Node):
 
         # 流式解码器状态
         self.codec = None
-        self._reset_decoder(log=False, reason='startup')
+        self._create_codec()
+        self.nal_buf = bytearray()       # NAL accumulation buffer
         self.frame_count = 0
         self.packet_count = 0
         self.parsed_packet_count = 0
         self.gap_count = 0
         self.last_seq = None
-        
+
         # 显示队列
         if self.display:
             self.frame_queue = queue.Queue(maxsize=3)
             self.display_thread = threading.Thread(target=self._display_loop, daemon=True)
             self.display_thread.start()
-        
+
         # QoS
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
             depth=3000
         )
-        
-        self.subscription = self.create_subscription(
-            VideoPacket,
-            topic,
-            self._packet_callback,
-            qos
-        )
-        
+        self.subscription = self.create_subscription(VideoPacket, topic, self._packet_callback, qos)
         self.get_logger().info(f'Decoder started: subscribing to {topic}')
 
-    def _reset_decoder(self, *, log: bool = True, reason: str = ''):
+    def _create_codec(self):
         self.codec = av.CodecContext.create('h264', 'r')
         self.codec.thread_type = 'FRAME'
         self.codec.flags |= av.codec.context.Flags.LOW_DELAY
-        if log:
-            self.get_logger().warn(f'Reset decoder ({reason})')
+
+    def _reset_codec(self, reason=''):
+        self.nal_buf.clear()
+        self._create_codec()
+        self.get_logger().warn(f'Reset codec ({reason})')
+
+    @staticmethod
+    def _find_sc(data: bytes, start: int = 0) -> int:
+        """Return offset of next Annex‑B start code, or len(data) if none."""
+        for i in range(start, len(data) - 2):
+            if data[i] == 0 and data[i + 1] == 0:
+                if data[i + 2] == 1:
+                    return i
+                if i + 3 < len(data) and data[i + 2] == 0 and data[i + 3] == 1:
+                    return i
+        return len(data)
 
     def _handle_decoded_frame(self, frame):
         if frame is None or frame.width == 0 or frame.height == 0:
             return
-
         img = frame.to_ndarray(format='bgr24')
         if img is None or img.size == 0:
             return
-
         self.frame_count += 1
         if self.display:
             try:
@@ -104,60 +110,85 @@ class VideoDecoderNode(Node):
                 pass
         elif self.frame_count % 60 == 0:
             self.get_logger().info(f'Decoded {self.frame_count} frames')
-        
+
     def _packet_callback(self, msg):
-        """接收 up to 280byte 分片，先 parse，再 decode。"""
+        """Accumulate 280B chunks, extract NALs, feed complete NALs to PyAV."""
         self.packet_count += 1
 
-        # 丢包检测 — bframes=0/ref=1 → single packet loss is recoverable,
-        # PyAV parser skips corrupt data & waits for next NAL start code.
-        # Only reset when gap is large (≥ 3) — likely system-level issue.
+        # 丢包检测
         if self.last_seq is not None and msg.sequence_id > self.last_seq + 3:
             self.gap_count += 1
-            self.get_logger().warn(
-                f'Large gap detected: {self.last_seq} -> {msg.sequence_id}, reset decoder')
-            self._reset_decoder(reason='large sequence gap')
+            self.get_logger().warn(f'Large gap: {self.last_seq} -> {msg.sequence_id}, reset')
+            self._reset_codec('large sequence gap')
         elif self.last_seq is not None and msg.sequence_id != self.last_seq + 1:
             self.gap_count += 1
         self.last_seq = msg.sequence_id
 
-        # chunk is exactly 280B Annex‑B H.264 (encoder fills to 280)
+        # Append chunk to accumulation buffer
         chunk = bytes(msg.data)
+        self.nal_buf.extend(chunk)
 
-        try:
-            parsed_packets = self.codec.parse(chunk)
-            self.parsed_packet_count += len(parsed_packets)
-            for packet in parsed_packets:
-                try:
-                    frames = self.codec.decode(packet)
-                except av.AVError:
-                    continue
-                for frame in frames:
-                    self._handle_decoded_frame(frame)
-        except av.AVError as e:
-            self.get_logger().warn(f'Parse error: {e!s}')
+        # Extract complete NALs and feed to PyAV
+        while len(self.nal_buf) >= 4:
+            buf = self.nal_buf
+
+            # Find first start code
+            sc = self._find_sc(buf)
+            if sc == len(buf):
+                break               # no start code — wait for more data
+            if sc > 0:
+                # Discard leading garbage before first start code
+                del buf[:sc]
+                continue
+            # sc == 0: start code at position 0
+
+            # Determine start-code length (3 or 4 bytes)
+            sc_len = 4 if (len(buf) >= 4 and buf[2] == 0 and buf[3] == 1) else 3
+
+            # Find next start code (NAL boundary)
+            next_sc = self._find_sc(buf, sc_len)
+            if next_sc == len(buf):
+                break  # NAL spans into future chunks
+
+            # Extract complete NAL
+            nal = bytes(buf[:next_sc])
+            del buf[:next_sc]
+
+            # Feed to PyAV
+            try:
+                packets = self.codec.parse(nal)
+                self.parsed_packet_count += len(packets)
+                for pkt in packets:
+                    try:
+                        frames = self.codec.decode(pkt)
+                    except av.AVError:
+                        continue
+                    for frame in frames:
+                        self._handle_decoded_frame(frame)
+            except av.AVError as e:
+                self.get_logger().debug(f'Parse error: {e!s}')
+
+        # Prevent unbounded buffer growth (corrupted stream guard)
+        if len(self.nal_buf) > 280 * 20:
+            self.get_logger().warn(f'NAL buffer overflow {len(self.nal_buf)}B, resetting')
+            self._reset_codec('buffer overflow')
 
         if self.packet_count % 600 == 0:
             self.get_logger().info(
                 f'Rx packets={self.packet_count} parsed_h264={self.parsed_packet_count} '
                 f'decoded_frames={self.frame_count} gaps={self.gap_count}')
-    
+
     def _display_loop(self):
         """独立线程显示"""
         cv2.namedWindow('Doorlock Decoder', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Doorlock Decoder', self.display_width, self.display_height)
-        
         while rclpy.ok():
             try:
                 img = self.frame_queue.get(timeout=0.05)
-                if img is None:  # 退出信号
+                if img is None:
                     break
-                if img.size > 0:  # 再次检查
-                    img_disp = cv2.resize(
-                        img,
-                        (self.display_width, self.display_height),
-                        interpolation=cv2.INTER_NEAREST
-                    )
+                if img.size > 0:
+                    img_disp = cv2.resize(img, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
                     self._draw_overlay(img_disp)
                     cv2.imshow('Doorlock Decoder', img_disp)
                     if self.debug_dump_enable and self.debug_dump_save_decoder:
@@ -175,34 +206,28 @@ class VideoDecoderNode(Node):
             except Exception as e:
                 self.get_logger().error(f'Display error: {e}')
                 break
-        
         cv2.destroyAllWindows()
 
     def _draw_overlay(self, img):
         """叠加准心与中心圆点。"""
         h, w = img.shape[:2]
-
-        # 准心位置（相对画面中心可调）
         cx = max(0, min(w - 1, w // 2 + self.crosshair_offset_x))
         cy = max(0, min(h - 1, h // 2 + self.crosshair_offset_y))
-
-        # 淡紫色准心（横竖贯穿全屏）
-        crosshair_color = (230, 190, 235)  # BGR
+        crosshair_color = (230, 190, 235)
         cv2.line(img, (0, cy), (w - 1, cy), crosshair_color, self.crosshair_width, cv2.LINE_AA)
         cv2.line(img, (cx, 0), (cx, h - 1), crosshair_color, self.crosshair_width, cv2.LINE_AA)
-
-        # 画面正中心固定淡绿色小圆点（不可调）
-        center_color = (170, 255, 170)  # BGR
+        center_color = (170, 255, 170)
         center = (w // 2, h // 2)
         cv2.circle(img, center, 24, center_color, 1, cv2.LINE_AA)
-    
+
     def destroy_node(self):
         if self.display:
             try:
-                self.frame_queue.put_nowait(None)  # 退出信号
+                self.frame_queue.put_nowait(None)
             except queue.Full:
                 pass
-            self.display_thread.join(timeout=1.0)
+            if hasattr(self, 'display_thread'):
+                self.display_thread.join(timeout=1.0)
         super().destroy_node()
 
 
