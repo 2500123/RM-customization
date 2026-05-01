@@ -100,8 +100,9 @@ colcon build && source install/setup.bash
 ros2 launch bringup sniper.launch.py
 
 # 终端 2: 串口桥接 (ROS → 下位机)
+# --send-rate 限制串口发送速率，不超过 MCU 处理能力，降低丢包
 source install/setup.bash
-python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats
+python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats --send-rate 40
 ```
 
 **串口帧格式 (cmd=0x0310，机器人自定义数据上传):**

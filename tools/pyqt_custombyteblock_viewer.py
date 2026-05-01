@@ -176,6 +176,10 @@ def main() -> int:
     if args.mode in ("h264_stream", "hevc_udp"):
         try:
             import av  # type: ignore
+            try:
+                av.logging.set_level(av.logging.ERROR)  # suppress "no frame!" noise
+            except Exception:
+                pass
             if args.mode == "h264_stream":
                 _h264_codec = av.CodecContext.create("h264", "r")
                 _h264_codec.thread_type = "FRAME"

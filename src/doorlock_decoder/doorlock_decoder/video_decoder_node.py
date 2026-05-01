@@ -78,6 +78,10 @@ class VideoDecoderNode(Node):
         self.codec = av.CodecContext.create('h264', 'r')
         self.codec.thread_type = 'FRAME'
         self.codec.flags |= av.codec.context.Flags.LOW_DELAY
+        try:
+            av.logging.set_level(av.logging.ERROR)  # suppress PyAV "no frame!" noise
+        except Exception:
+            pass
 
     def _reset_codec(self, reason=''):
         self._create_codec()

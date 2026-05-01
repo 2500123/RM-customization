@@ -100,6 +100,8 @@ def main() -> int:
     ap.add_argument("--ros-topic", default="/video_stream")
     ap.add_argument("--print-stats", action="store_true")
     ap.add_argument("--cmd-id", type=int, default=0x0310, help="下位机命令ID")
+    ap.add_argument("--send-rate", type=int, default=40,
+                    help="串口发送速率上限 (pkt/s)，不超过 MCU 处理能力")
     args = ap.parse_args()
 
     rclpy.init(args=sys.argv[1:])
@@ -123,7 +125,12 @@ def main() -> int:
     ros_rx = 0
     serial_tx = 0
     drop_count = 0
-    seq_counter = 0  # 简单的包序号计数器，可每帧递增
+    seq_counter = 0
+    skip_count = 0       # 因限速跳过的包数
+    min_interval = 1.0 / max(args.send_rate, 1)
+    last_send_time = 0.0
+
+    print(f"[serial] Send rate limit: {args.send_rate} pkt/s (min interval {min_interval*1000:.1f} ms)")
 
     # ── ROS 节点 ──
     class SerialBridgeNode(Node):
@@ -142,8 +149,15 @@ def main() -> int:
             )
 
         def _on_packet(self, msg: VideoPacket) -> None:
-            nonlocal ros_rx, serial_tx, drop_count, seq_counter
+            nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter, last_send_time
             ros_rx += 1
+
+            # ── 发送限速：不超过 MCU 串口处理能力 ──
+            now = time.monotonic()
+            if now - last_send_time < min_interval:
+                skip_count += 1
+                return
+            last_send_time = now
 
             # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
             chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
@@ -183,7 +197,7 @@ def main() -> int:
                 print(
                     f"[serial] ROS rx={ros_rx} (+{dr}, {dr/dt:.0f} pkt/s) | "
                     f"Serial tx={serial_tx} (+{ds}, {ds/dt:.0f} pkt/s) | "
-                    f"drops={drop_count}"
+                    f"drops={drop_count} skipped={skip_count}"
                 )
                 last_stat = time.monotonic()
                 last_ros = ros_rx

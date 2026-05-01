@@ -63,6 +63,21 @@ sudo systemctl daemon-reload
 
 ---
 
+## 三、丢包排查
+
+串口桥接的 `--send-rate` 参数控制发送速率上限。如果 MCU 无法跟上，降低此值：
+
+```bash
+# 默认 40 pkt/s；如果仍有丢包，降到 20-30
+python3 tools/serial_bridge.py --send-rate 20 ...
+```
+
+查看丢包率：打开 viewer `--print-stats`，看状态栏的 `lost` 百分比。
+- `lost=0%` → 链路健康
+- `lost>10%` → 降 `--send-rate` 或检查 MCU 固件
+
+---
+
 ## 二、自定义客户端 PC（接收端）
 
 ### 安装
