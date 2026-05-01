@@ -458,10 +458,16 @@ def main() -> int:
                         continue
 
                     # ── 关键修复：发送端零填充会破坏 H.264 码流 ──
-                    # 发送端 (mqtt_custombyteblock_sender.py) 将 chunk 用 \x00 补齐到固定长度，
+                    # 发送端 (serial_bridge/mqtt_custombyteblock_sender) 将 chunk 用 \x00 补齐到固定长度，
                     # 连续零字节会被 H.264 parser 误判为 start code (00 00 00 01)，
                     # 导致 NAL 单元边界错乱 → 花屏 → 解码器失锁不再输出帧。
-                    chunk = chunk.rstrip(b'\x00')
+                    #
+                    # 优先使用 fragment header 中的 total_len 字段获取真实数据长度；
+                    # 若 total_len == 0（旧版本兼容），回退到 rstrip(b'\x00')。
+                    if hdr.total_len > 0 and hdr.total_len < len(chunk):
+                        chunk = chunk[:hdr.total_len]
+                    else:
+                        chunk = chunk.rstrip(b'\x00')
                     if not chunk:
                         continue
 

@@ -65,8 +65,8 @@ MAX_CUSTOM_BYTEBLOCK_BYTES = 300
 
 
 def pack_h264_fragment(frame_id: int, chunk: bytes) -> bytes:
-    """Pack a single H.264 chunk into a fragment (frag_cnt=1, total_len=0)."""
-    return _HEADER.pack(frame_id, 0, 1, CODEC_H264, 0, 0) + chunk
+    """Pack a single H.264 chunk into a fragment (frag_cnt=1, total_len=actual size)."""
+    return _HEADER.pack(frame_id, 0, 1, CODEC_H264, 0, len(chunk)) + chunk
 
 
 # ── bridge node ───────────────────────────────────────────────────────

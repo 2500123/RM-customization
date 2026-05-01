@@ -150,7 +150,7 @@ def main() -> int:
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
-                codec=CODEC_H264, flags=0, total_len=0, chunk=chunk,
+                codec=CODEC_H264, flags=0, total_len=len(chunk), chunk=chunk,
             )
             # 补零到 300B，使 data_length=300，MCU 直转无需再补
             if len(frag) < 300:

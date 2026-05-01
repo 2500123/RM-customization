@@ -596,33 +596,77 @@ void VideoEncoderNode::pull_stream_and_packetize()
       stream_buffer_.resize(old_size + map.size);
       memcpy(stream_buffer_.data() + old_size, map.data, map.size);
 
-      // 2秒滑动窗口硬限速：任何窗口内总字节不超过 window_limit_bytes
-      while (stream_buffer_.size() >= packet_bytes) {
+      // NAL-aware chunking: ensure each emitted chunk starts at an Annex‑B start code.
+      // Without this, blind 280‑B slicing cuts NAL units in the middle, causing
+      // decoder errors (co‑located POCs, missing reference picture, green/blurry output).
+      while (true) {
+        size_t buf_size = stream_buffer_.size();
+        if (buf_size < 4) break;                     // need at least a start code
+
+        // 1) 确保 stream_buffer 起始于 Annex‑B 起始码（00 00 00 01 或 00 00 01）
+        size_t first_sc = buf_size;
+        for (size_t i = 0; i + 3 <= buf_size; ++i) {
+          if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
+            if (stream_buffer_[i + 2] == 1) { first_sc = i; break; }
+            if (i + 4 <= buf_size &&
+                stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1) {
+              first_sc = i; break;
+            }
+          }
+        }
+        if (first_sc > 0) {
+          if (first_sc == buf_size) {                // no start code at all
+            stream_buffer_.clear();
+            break;
+          }
+          memmove(stream_buffer_.data(), stream_buffer_.data() + first_sc,
+                  buf_size - first_sc);
+          stream_buffer_.resize(buf_size - first_sc);
+          buf_size = stream_buffer_.size();
+        }
+
+        if (buf_size < 4) break;
+
+        // 2) 在 [packet_bytes*2/3, packet_bytes*3/2] 范围内寻找下一个起始码作为分割点
+        size_t lo = std::max(packet_bytes * 2 / 3, (size_t)4);
+        size_t hi = std::min(packet_bytes + packet_bytes / 2, buf_size);
+        size_t split = packet_bytes;                 // fallback: 取满 280 B
+        for (size_t i = lo; i + 3 <= hi; ++i) {
+          if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
+            if (stream_buffer_[i + 2] == 1 ||
+                (i + 4 <= hi && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1)) {
+              split = i;                             // cut right before this start code
+              break;
+            }
+          }
+        }
+        size_t take = std::min(split, buf_size);
+        if (take < 4) take = std::min(packet_bytes, buf_size);
+
+        // 3) 带宽限速检查
         const int64_t now_ns = this->now().nanoseconds();
-        while (!sent_window_.empty() && (now_ns - sent_window_.front().first) > window_ns) {
+        while (!sent_window_.empty() &&
+               (now_ns - sent_window_.front().first) > window_ns) {
           sent_window_bytes_ -= sent_window_.front().second;
           sent_window_.pop_front();
         }
+        if (sent_window_bytes_ + take > window_limit_bytes) break;
 
-        if (sent_window_bytes_ + packet_bytes > window_limit_bytes) {
-          break;
-        }
-
+        // 4) 发布
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
         pkt.data.fill(0);
-        memcpy(pkt.data.data(), stream_buffer_.data(), param_packet_size_);
+        memcpy(pkt.data.data(), stream_buffer_.data(), take);
 
         packet_pub_->publish(pkt);
-        sent_window_.emplace_back(now_ns, packet_bytes);
-        sent_window_bytes_ += packet_bytes;
+        sent_window_.emplace_back(now_ns, take);
+        sent_window_bytes_ += take;
 
-        memmove(stream_buffer_.data(), 
-                stream_buffer_.data() + param_packet_size_,
-                stream_buffer_.size() - param_packet_size_);
-        stream_buffer_.resize(stream_buffer_.size() - param_packet_size_);
+        memmove(stream_buffer_.data(), stream_buffer_.data() + take,
+                stream_buffer_.size() - take);
+        stream_buffer_.resize(stream_buffer_.size() - take);
       }
 
       // 排队时延上限：防止突发造成长延时。超限时丢弃旧数据。
