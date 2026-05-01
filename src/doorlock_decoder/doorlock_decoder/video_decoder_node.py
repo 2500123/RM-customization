@@ -109,13 +109,16 @@ class VideoDecoderNode(Node):
         """接收 up to 280byte 分片，先 parse，再 decode。"""
         self.packet_count += 1
 
-        # 丢包检测
-        if self.last_seq is not None and msg.sequence_id != self.last_seq + 1:
+        # 丢包检测 — bframes=0/ref=1 → single packet loss is recoverable,
+        # PyAV parser skips corrupt data & waits for next NAL start code.
+        # Only reset when gap is large (≥ 3) — likely system-level issue.
+        if self.last_seq is not None and msg.sequence_id > self.last_seq + 3:
             self.gap_count += 1
             self.get_logger().warn(
-                f'Gap detected: {self.last_seq} -> {msg.sequence_id}, reset decoder')
-            # 分片丢失会破坏码流同步，重置等待下一组 SPS/PPS + IDR
-            self._reset_decoder(reason='sequence gap')
+                f'Large gap detected: {self.last_seq} -> {msg.sequence_id}, reset decoder')
+            self._reset_decoder(reason='large sequence gap')
+        elif self.last_seq is not None and msg.sequence_id != self.last_seq + 1:
+            self.gap_count += 1
         self.last_seq = msg.sequence_id
 
         # chunk is exactly 280B Annex‑B H.264 (encoder fills to 280)
@@ -125,10 +128,14 @@ class VideoDecoderNode(Node):
             parsed_packets = self.codec.parse(chunk)
             self.parsed_packet_count += len(parsed_packets)
             for packet in parsed_packets:
-                for frame in self.codec.decode(packet):
+                try:
+                    frames = self.codec.decode(packet)
+                except av.AVError:
+                    continue
+                for frame in frames:
                     self._handle_decoded_frame(frame)
         except av.AVError as e:
-            self.get_logger().debug(f'Decode error: {e!s}')
+            self.get_logger().warn(f'Parse error: {e!s}')
 
         if self.packet_count % 600 == 0:
             self.get_logger().info(
