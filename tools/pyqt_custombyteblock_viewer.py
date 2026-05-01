@@ -212,11 +212,8 @@ def main() -> int:
 
     qsize_expanding = QtWidgets.QSizePolicy.Expanding if hasattr(QtWidgets.QSizePolicy, "Expanding") else QtWidgets.QSizePolicy.Policy.Expanding
 
-    # ========== 关键修改 1: 强制使用简单的 Client ID ==========
-    # 原代码: client_id = f"rm-viewer-{args.robot_id}"
-    client_id = "1"   # 因为 Broker 只接受纯数字 ID
-    # 若需要区分机器人，可以使用 str(args.robot_id) 但需确保 Broker 允许
-    # client_id = str(args.robot_id)
+    # 使用唯一 client ID，避免与下位机 MCU 的 MQTT 客户端冲突
+    client_id = f"rm-viewer-{args.robot_id}"
 
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QWidget()
@@ -365,6 +362,7 @@ def main() -> int:
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
+        nonlocal _h264_codec                       # stall recovery 会重建 codec
         drained = 0
         while drained < 200:
             try:
@@ -457,16 +455,13 @@ def main() -> int:
                         bad_msgs += 1
                         continue
 
-                    # ── 关键修复：发送端零填充会破坏 H.264 码流 ──
-                    # 发送端 (serial_bridge/mqtt_custombyteblock_sender) 将 chunk 用 \x00 补齐到固定长度，
-                    # 零字节会被 H.264 parser 误判为 start code (00 00 00 01)，
-                    # 导致 NAL 单元边界错乱 → 花屏 → 解码器失锁不再输出帧。
-                    #
-                    # 总策略：先用 total_len 截断（若有效），再 rstrip 去掉残留零填充。
-                    # total_len 来自 fragment header，非零时优先信任。
-                    if hdr.total_len > 0 and hdr.total_len < len(chunk):
+                    # ── 零填充去除 ──
+                    # fragment header 的 total_len 是桥接端 rstri'p 后的精确长度；
+                    # 直接用它截断，不再次 rstrip（避免切除 H.264 NAL 尾部的合法零字节）。
+                    if hdr.total_len > 0 and hdr.total_len <= len(chunk):
                         chunk = chunk[:hdr.total_len]
-                    chunk = chunk.rstrip(b'\x00')
+                    else:
+                        chunk = chunk.rstrip(b'\x00')
                     if not chunk:
                         continue
 
@@ -504,9 +499,12 @@ def main() -> int:
             now = time.monotonic()
             stall_sec = now - h264_last_frame_time
             if stall_sec > 3.0:
-                print(f"[viewer] H.264 decoder stalled for {stall_sec:.1f}s (rx={rx_msgs} frames={h264_frames}), resetting...", flush=True)
+                print(f"[viewer] H.264 decoder stalled for {stall_sec:.1f}s (rx={rx_msgs} frames={h264_frames}), recreating...", flush=True)
                 try:
-                    _h264_codec.flush_buffers()
+                    import av
+                    _h264_codec = av.CodecContext.create("h264", "r")
+                    _h264_codec.thread_type = "FRAME"
+                    _h264_codec.flags |= av.codec.context.Flags.LOW_DELAY
                 except Exception:
                     pass
                 h264_stall_resets += 1

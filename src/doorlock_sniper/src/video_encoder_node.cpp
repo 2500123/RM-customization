@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <cstdint>
 #include <cstring>  // 为 memcpy/memset
 #include <filesystem>
 #include <iomanip>
@@ -256,8 +255,13 @@ void VideoEncoderNode::initialize_gstreamer()
   gst_caps_unref(caps);
 
   const bool low_bitrate_mode = (param_target_bitrate_ <= 80);
-  const int key_int = std::max(8 * param_output_fps_, 30);
-  const int default_speed_preset = low_bitrate_mode ? 9 : 3;  // veryslow / veryfast
+  // Robust GOP for lossy transports (serial→MCU→MQTT):
+  //   bframes=0    no B-frames — eliminates "co‑located POCs" / "mmco" errors
+  //   ref=1        single reference — avoids cascading ref-picture loss
+  //   key-int~2s   short GOP — fast recovery after any gap
+  //   no mbtree    no macroblock‑tree — no cross‑frame rate‑control coupling
+  const int key_int = std::max(2 * param_output_fps_, 30);
+  const int default_speed_preset = low_bitrate_mode ? 6 : 3;  // medium / veryfast
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;
   std::transform(
@@ -289,17 +293,26 @@ void VideoEncoderNode::initialize_gstreamer()
       G_OBJECT(encoder),
       "bitrate", param_target_bitrate_,
       "speed-preset", speed_preset,
-      "tune", 0,                  // no tuning, favor efficiency
+      "tune", 0x00000004,         // zerolatency — minimal delay, no frame reordering
       "byte-stream", TRUE,
-      "key-int-max", key_int,     // 减少 I 帧开销
-      "bframes", 4,
-      "rc-lookahead", 40,
-      "sync-lookahead", 20,
-      "sliced-threads", FALSE,
-      "ref", 5,
+      "key-int-max", key_int,     // IDR every ~2 s → quick recovery after gap
+      "bframes", 0,               // NO B-frames — eliminates "mmco" / "co‑located POCs"
+      "rc-lookahead", 0,
+      "sync-lookahead", 0,
+      "sliced-threads", TRUE,
+      "ref", 1,                   // single reference — no cascading DPB corruption
       "aud", TRUE,
       "vbv-buf-capacity", 500,
-      "option-string", "repeat-headers=1:scenecut=0:aq-mode=2:aq-strength=1.2:mbtree=1:qcomp=0.75:subme=8:trellis=2:deblock=1,1:force-cfr=1",
+      "option-string",
+        "repeat-headers=1:"       // SPS/PPS before every IDR
+        "scenecut=0:"             // no adaptive scenecut → consistent GOP
+        "aq-mode=2:"
+        "aq-strength=1.2:"
+        "subme=6:"                // sub‑pixel ME (balanced)
+        "trellis=1:"              // trellis quantisation (balanced)
+        "deblock=1,1:"
+        "force-cfr=1:"
+        "no-mbtree=1",            // disable macroblock‑tree (requires lookahead)
       "pass", 0,
       nullptr);
   } else {
@@ -597,116 +610,35 @@ void VideoEncoderNode::pull_stream_and_packetize()
       stream_buffer_.resize(old_size + map.size);
       memcpy(stream_buffer_.data() + old_size, map.data, map.size);
 
-      // NAL-aware chunking: each chunk either starts at an Annex‑B start code
-      // ("start" mode) or is a continuation of an incomplete NAL ("continuation" mode).
-      // Without this, blind 280‑B slicing cuts NAL units in the middle, causing
-      // decoder errors (co‑located POCs, missing reference picture, green/blurry output).
-      //
-      // ── helper: find next Annex‑B start code in [start, end) ──
-      // H.264 uses emulation prevention bytes, so 00 00 00 01 and 00 00 01
-      // can only appear as genuine start codes — never inside NAL payloads.
-      // Both forms are matched unconditionally.
-      auto find_sc = [&](size_t start, size_t end) -> size_t {
-        for (size_t i = start; i + 3 <= end; ++i) {
-          if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
-            if (stream_buffer_[i + 2] == 1 ||
-                (i + 4 <= end &&
-                 stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1))
-              return i;
-          }
-        }
-        return end;  // not found
-      };
-
-      bool need_start_code = true;  // next chunk must begin with a start code
-      while (true) {
-        size_t buf_size = stream_buffer_.size();
-        if (buf_size == 0) {
-          need_start_code = true;               // fresh start next round
-          break;
-        }
-
-        // ── 带宽限速 ──
+      // Simple 280‑B blind slicing — safe because encoder uses robust params:
+      //   bframes=0  ref=1  short GOP  → single-reference, no reordering
+      // PyAV's codec.parse() handles partial NAL data by maintaining state.
+      while (stream_buffer_.size() >= packet_bytes) {
         const int64_t now_ns = this->now().nanoseconds();
-        while (!sent_window_.empty() &&
-               (now_ns - sent_window_.front().first) > window_ns) {
+        while (!sent_window_.empty() && (now_ns - sent_window_.front().first) > window_ns) {
           sent_window_bytes_ -= sent_window_.front().second;
           sent_window_.pop_front();
         }
-        if (sent_window_bytes_ >= window_limit_bytes) break;
 
-        if (need_start_code) {
-          // ── 模式 START：必须从起始码开始 ──
-          if (buf_size < 4) break;
-          size_t sc = find_sc(0, buf_size);
-          if (sc == buf_size) {
-            if (buf_size > packet_bytes * 4) {
-              // 积压太多却没有起始码 → 乱码，安全清理
-              stream_buffer_.clear();
-            }
-            break;  // 等更多数据
-          }
-          if (sc > 0) {
-            // 跳过起始码前的垃圾（上一帧残留）
-            memmove(stream_buffer_.data(), stream_buffer_.data() + sc,
-                    buf_size - sc);
-            stream_buffer_.resize(buf_size - sc);
-            buf_size = stream_buffer_.size();
-          }
-        }
-
-        // ── 确定取多长 ──
-        size_t lo = std::max(packet_bytes * 4 / 5, (size_t)1u);
-        size_t hi = std::min(packet_bytes * 6 / 5, buf_size);
-        size_t split = std::min(packet_bytes, buf_size);
-
-        if (need_start_code) {
-          // 从起始码开始的 chunk：在 [lo, hi] 范围找下一个起始码作为切分点
-          size_t next_sc = find_sc(lo > buf_size ? buf_size : lo, hi);
-          if (next_sc < hi) split = next_sc;         // 刚好切在下一个起始码前
-          // else: 没找到 → 用 packet_bytes，延续模式
-        } else {
-          // 延续模式：尽量找到下一个起始码，否则取 packet_bytes
-          size_t next_sc = find_sc(1, hi);
-          if (next_sc < hi) split = next_sc;         // 找到 → 切在起始码前
-        }
-        if (split < 4) split = std::min(packet_bytes, buf_size);
-        if (split == 0) {
-          need_start_code = true;
+        if (sent_window_bytes_ + packet_bytes > window_limit_bytes) {
           break;
         }
-
-        // ── 下一块的模式 ──
-        if (split < buf_size) {
-          need_start_code = (find_sc(split, std::min(split + 4, buf_size)) == split);
-        } else {
-          need_start_code = true;                   // 吃干净了，下轮从头来
-        }
-
-        // ── 发送 ──
-        // Overflow guard: sent_window_bytes_ accumulates; guard against wrap-around
-        if (sent_window_bytes_ > SIZE_MAX - split) {
-          RCLCPP_WARN(this->get_logger(), "sent_window_bytes_ overflow guard");
-          sent_window_.clear();
-          sent_window_bytes_ = 0;
-          continue;
-        }
-        if (sent_window_bytes_ + split > window_limit_bytes) break;
 
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
         pkt.data.fill(0);
-        memcpy(pkt.data.data(), stream_buffer_.data(), split);
+        memcpy(pkt.data.data(), stream_buffer_.data(), param_packet_size_);
 
         packet_pub_->publish(pkt);
-        sent_window_.emplace_back(now_ns, split);
-        sent_window_bytes_ += split;
+        sent_window_.emplace_back(now_ns, packet_bytes);
+        sent_window_bytes_ += packet_bytes;
 
-        memmove(stream_buffer_.data(), stream_buffer_.data() + split,
-                stream_buffer_.size() - split);
-        stream_buffer_.resize(stream_buffer_.size() - split);
+        memmove(stream_buffer_.data(),
+                stream_buffer_.data() + param_packet_size_,
+                stream_buffer_.size() - param_packet_size_);
+        stream_buffer_.resize(stream_buffer_.size() - param_packet_size_);
       }
 
       // 排队时延上限：防止突发造成长延时。超限时丢弃旧数据。
