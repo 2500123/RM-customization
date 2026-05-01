@@ -106,7 +106,7 @@ class VideoDecoderNode(Node):
             self.get_logger().info(f'Decoded {self.frame_count} frames')
         
     def _packet_callback(self, msg):
-        """接收 150byte 分片，先 parse，再 decode。"""
+        """接收 up to 280byte 分片，先 parse，再 decode。"""
         self.packet_count += 1
 
         # 丢包检测
@@ -114,11 +114,14 @@ class VideoDecoderNode(Node):
             self.gap_count += 1
             self.get_logger().warn(
                 f'Gap detected: {self.last_seq} -> {msg.sequence_id}, reset decoder')
-            # 任意 150B 分片丢失都会破坏码流同步，直接重置等待下一组 SPS/PPS + IDR
+            # 分片丢失会破坏码流同步，重置等待下一组 SPS/PPS + IDR
             self._reset_decoder(reason='sequence gap')
         self.last_seq = msg.sequence_id
 
-        chunk = bytes(msg.data)
+        # Strip trailing zero-padding (encoder emits fixed-size 280B arrays)
+        chunk = bytes(msg.data).rstrip(b'\x00')
+        if not chunk:
+            return
 
         try:
             parsed_packets = self.codec.parse(chunk)

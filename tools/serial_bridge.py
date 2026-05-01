@@ -145,8 +145,12 @@ def main() -> int:
             nonlocal ros_rx, serial_tx, drop_count, seq_counter
             ros_rx += 1
 
-            # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
+            # 包装 H.264 chunk (8B 片段头 + payload) → 可变长度
             chunk = bytes(msg.data)
+            # Strip trailing zero-padding before computing total_len
+            chunk = chunk.rstrip(b'\x00')
+            if not chunk:
+                return
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,

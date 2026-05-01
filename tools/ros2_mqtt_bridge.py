@@ -121,7 +121,7 @@ def main() -> int:
     print(f"[bridge] Robot ID={args.robot_id}")
     print(f"[bridge] ROS {args.ros_topic} → MQTT {args.host}:{args.port}/{args.topic}")
     print(f"[bridge] Proto: {'protobuf library' if using_protobuf_library() else 'manual varint'}")
-    print(f"[bridge] VideoPacket payload: 280 bytes → fragment: 288 bytes → CustomByteBlock wire: ~291 bytes (< {MAX_CUSTOM_BYTEBLOCK_BYTES}B)")
+    print(f"[bridge] VideoPacket payload: up to 280 bytes → fragment: up to 288 bytes → CustomByteBlock wire: ≤ {MAX_CUSTOM_BYTEBLOCK_BYTES}B")
 
     # MQTT client
     client = mqtt.Client(client_id=client_id)
@@ -148,12 +148,17 @@ def main() -> int:
             nonlocal ros_rx, mqtt_tx, drop_count, oversized_count
             ros_rx += 1
 
-            chunk = bytes(msg.data)  # 150 bytes of H.264
+            chunk = bytes(msg.data)
+            # Strip trailing zero-padding (encoder emits fixed-size 280B arrays;
+            # NAL-aware chunking produces variable-length data).
+            chunk = chunk.rstrip(b'\x00')
+            if not chunk:
+                return
             # Wrap in fragment header (frame_id = low 16 bits of sequence_id)
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_h264_fragment(frame_id, chunk)
 
-            # 检查是否超过官方限制 (158 bytes 远小于 300 bytes limit)
+            # 检查是否超过官方限制 (≤ 288 bytes, well under 300 bytes limit)
             if len(frag) > MAX_CUSTOM_BYTEBLOCK_BYTES:
                 oversized_count += 1
                 return

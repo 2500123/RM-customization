@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>  // 为 memcpy/memset
 #include <filesystem>
 #include <iomanip>
@@ -602,11 +603,17 @@ void VideoEncoderNode::pull_stream_and_packetize()
       // decoder errors (co‑located POCs, missing reference picture, green/blurry output).
       //
       // ── helper: find next Annex‑B start code in [start, end) ──
+      // Prefer the 4-byte form (00 00 00 01) which x264 emits; accept 3-byte
+      // (00 00 01) only at position 0 (continuation of an already‑seen run).
       auto find_sc = [&](size_t start, size_t end) -> size_t {
         for (size_t i = start; i + 3 <= end; ++i) {
           if (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0) {
-            if (stream_buffer_[i + 2] == 1 ||
-                (i + 4 <= end && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1))
+            // 4‑byte start code: 00 00 00 01
+            if (i + 4 <= end && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1)
+              return i;
+            // 3‑byte start code: 00 00 01 (only trust at buffer start where
+            // the previous chunk ended with 00 00, leaving a partial prefix)
+            if (i == 0 && stream_buffer_[i + 2] == 1)
               return i;
           }
         }
@@ -679,6 +686,15 @@ void VideoEncoderNode::pull_stream_and_packetize()
         }
 
         // ── 发送 ──
+        // Overflow guard: sent_window_bytes_ accumulates; guard against wrap-around
+        if (sent_window_bytes_ > SIZE_MAX - split) {
+          RCLCPP_WARN(this->get_logger(), "sent_window_bytes_ overflow guard");
+          sent_window_.clear();
+          sent_window_bytes_ = 0;
+          continue;
+        }
+        if (sent_window_bytes_ + split > window_limit_bytes) break;
+
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
