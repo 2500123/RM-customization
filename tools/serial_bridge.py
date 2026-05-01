@@ -96,7 +96,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="RoboMaster 串口桥接: ROS → 下位机")
     ap.add_argument("--device", default="/dev/ttyACM0", help="串口设备")
     ap.add_argument("--baud", type=int, default=921600, help="波特率")
-    ap.add_argument("--robot-id", type=int, default=1)
+    ap.add_argument("--robot-id", type=int, default=01)
     ap.add_argument("--ros-topic", default="/video_stream")
     ap.add_argument("--print-stats", action="store_true")
     ap.add_argument("--cmd-id", type=int, default=0x0310, help="下位机命令ID")
@@ -152,18 +152,13 @@ def main() -> int:
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
                 codec=CODEC_H264, flags=0, total_len=0, chunk=chunk,
             )
-            # 补零到 300B，使 data_length=300，满足 CustomByteBlock 上限
+            # 补零到 300B，使 data_length=300，MCU 直转无需再补
             if len(frag) < 300:
                 frag = frag + b'\x00' * (300 - len(frag))
 
             # 串口帧封装（传入当前 seq，每次递增，循环使用即可）
-            # frame = pack_serial_frame(args.cmd_id, frag, seq=seq_counter)
-            # seq_counter = (seq_counter + 1) & 0xFF  # seq 范围 0-255
-
-            # 由于下位机固件对 seq 没有实际使用（仅做日志输出），且我们发送速率较高，seq 反而可能增加 CPU 负担和串口拥塞风险。
-            # 因此这里直接固定 seq=0，简化实现。
-
-            frame = pack_serial_frame(args.cmd_id, frag, seq=0)
+            frame = pack_serial_frame(args.cmd_id, frag, seq=seq_counter)
+            seq_counter = (seq_counter + 1) & 0xFF  # seq 范围 0-255
 
             try:
                 ser.write(frame)

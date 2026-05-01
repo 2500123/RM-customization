@@ -212,7 +212,12 @@ def main() -> int:
 
     qsize_expanding = QtWidgets.QSizePolicy.Expanding if hasattr(QtWidgets.QSizePolicy, "Expanding") else QtWidgets.QSizePolicy.Policy.Expanding
 
-    client_id = f"rm-viewer-{args.robot_id}"
+    # ========== 关键修改 1: 强制使用简单的 Client ID ==========
+    # 原代码: client_id = f"rm-viewer-{args.robot_id}"
+    client_id = "1"   # 因为 Broker 只接受纯数字 ID
+    # 若需要区分机器人，可以使用 str(args.robot_id) 但需确保 Broker 允许
+    # client_id = str(args.robot_id)
+
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QWidget()
     window.setWindowTitle(f"{args.window} [Robot {args.robot_id}] [{binding}]")
@@ -241,6 +246,8 @@ def main() -> int:
     rx_msgs = bad_msgs = 0
     h264_frames = 0
     h264_parse_errors = 0
+    h264_last_frame_time = 0.0
+    h264_stall_resets = 0
     hevc_frames = 0
     hevc_packets = 0
     hevc_parse_errors = 0
@@ -284,7 +291,8 @@ def main() -> int:
         if args.mode == "h264_stream":
             status_label.setText(
                 f"MQTT {args.host}:{args.port} topic={args.topic} mode={args.mode} | "
-                f"rx={rx_msgs} bad={bad_msgs} parsed_frames={h264_frames} parse_errs={h264_parse_errors} | "
+                f"rx={rx_msgs} bad={bad_msgs} parsed_frames={h264_frames} parse_errs={h264_parse_errors} "
+                f"stall_resets={h264_stall_resets} | "
                 f"data_len={last_data_len} head={last_data_head.hex()}"
             )
         elif args.mode == "hevc_udp":
@@ -302,11 +310,14 @@ def main() -> int:
 
     def reset_view() -> None:
         nonlocal rx_msgs, bad_msgs, h264_frames, h264_parse_errors
+        nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
         rx_msgs = bad_msgs = 0
         h264_frames = 0
         h264_parse_errors = 0
+        h264_last_frame_time = 0.0
+        h264_stall_resets = 0
         hevc_frames = 0
         hevc_packets = 0
         hevc_parse_errors = 0
@@ -344,13 +355,14 @@ def main() -> int:
         except queue.Full:
             pass
 
-    # ── MQTT 客户端创建 (连接在下方统一处理) ──
+    # ── MQTT 客户端创建 ──
     client = mqtt.Client(client_id=client_id)
     client.on_connect = on_connect
     client.on_message = on_message
 
     def pump() -> None:
         nonlocal rx_msgs, bad_msgs, h264_frames, h264_parse_errors
+        nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
         drained = 0
@@ -390,8 +402,6 @@ def main() -> int:
                         del _hevc_reasm[k]
 
                     # Check if frame is complete
-                    expected_chunks = set(range(len(entry["chunks"])))
-                    # We don't know frag_cnt, so check if total bytes match
                     if not entry["chunks"]:
                         continue
                     assembled = b"".join(entry["chunks"][i] for i in sorted(entry["chunks"]))
@@ -422,9 +432,11 @@ def main() -> int:
                             hevc_parse_errors += 1
                     continue
 
-                # ── MQTT modes: protobuf → data ──
+                # ── MQTT modes: 注意此处直接使用 payload 作为裸数据（288 字节） ──
                 rx_msgs += 1
-                data = parse_cbb(pb)
+
+                # ========== 关键修改 2: 直接使用 pb 作为 data，不调用 parse_cbb ==========
+                data = pb   # 原代码: data = parse_cbb(pb)
                 if not data:
                     continue
                 last_data_len = len(data)
@@ -435,6 +447,7 @@ def main() -> int:
 
                 # ── h264_stream ──
                 if args.mode == "h264_stream":
+                    # 调用 unpack_fragment 提取 H.264 chunk
                     try:
                         hdr, chunk = unpack_fragment(data)
                     except Exception:
@@ -443,6 +456,15 @@ def main() -> int:
                     if hdr.codec != CODEC_H264:
                         bad_msgs += 1
                         continue
+
+                    # ── 关键修复：发送端零填充会破坏 H.264 码流 ──
+                    # 发送端 (mqtt_custombyteblock_sender.py) 将 chunk 用 \x00 补齐到固定长度，
+                    # 连续零字节会被 H.264 parser 误判为 start code (00 00 00 01)，
+                    # 导致 NAL 单元边界错乱 → 花屏 → 解码器失锁不再输出帧。
+                    chunk = chunk.rstrip(b'\x00')
+                    if not chunk:
+                        continue
+
                     try:
                         parsed_packets = _h264_codec.parse(chunk)
                         for packet in parsed_packets:
@@ -458,6 +480,7 @@ def main() -> int:
                                 if arr is None or arr.size == 0:
                                     continue
                                 h264_frames += 1
+                                h264_last_frame_time = time.monotonic()
                                 h, w, ch = arr.shape
                                 qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
                                 last_img = qimg.copy()
@@ -467,6 +490,23 @@ def main() -> int:
                     continue
             except Exception:
                 bad_msgs += 1
+
+        # ── H.264 解码器 stall 检测与自动恢复 ──
+        # 如果持续收到数据（rx_msgs 增长）但超过 3 秒没产出任何帧，
+        # 说明解码器状态已被破坏，需要 flush + 重建。
+        if (args.mode == "h264_stream" and _h264_codec is not None
+                and h264_last_frame_time > 0 and rx_msgs > 10):
+            now = time.monotonic()
+            stall_sec = now - h264_last_frame_time
+            if stall_sec > 3.0:
+                print(f"[viewer] H.264 decoder stalled for {stall_sec:.1f}s (rx={rx_msgs} frames={h264_frames}), resetting...", flush=True)
+                try:
+                    _h264_codec.flush_buffers()
+                except Exception:
+                    pass
+                h264_stall_resets += 1
+                h264_last_frame_time = time.monotonic()  # prevent rapid re-trigger
+
         if args.print_stats:
             update_status()
 
@@ -477,7 +517,6 @@ def main() -> int:
     if args.mode == "hevc_udp":
         _udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         _udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # 绑定到 0.0.0.0 以接收来自机器人的 UDP 包
         _udp_sock.bind(("0.0.0.0", args.udp_port))
         _udp_sock.settimeout(0.5)
         _udp_running = True

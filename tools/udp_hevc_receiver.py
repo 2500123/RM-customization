@@ -85,7 +85,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=3334, help="UDP 监听端口")
     ap.add_argument("--bind", default="", help="绑定地址 (空=所有网卡, 比赛用 192.168.12.2)")
     ap.add_argument("--display", action="store_true", help="OpenCV 显示解码画面")
-    ap.add_argument("--display-scale", type=int, default=1, help="显示缩放倍数")
+    ap.add_argument("--display-scale", type=int, default=01, help="显示缩放倍数")
     ap.add_argument("--stats-only", action="store_true", help="仅统计, 不解码")
     ap.add_argument("--raw", action="store_true", help="裸 HEVC 流 (跳过 8B 帧头, 本地测试用)")
     ap.add_argument("--save-dir", default="", help="保存解码帧到此目录 (PNG)")

@@ -168,9 +168,9 @@ def main()->int:
                 cl=int(args.h264_chunk_len)
                 if h264_offset+cl>len(h264_data): h264_offset=0
                 raw=h264_data[h264_offset:h264_offset+cl]
-                if len(raw)<cl: raw+=b"\x00"*(cl-len(raw))
+                # 不再补零——补零会引入虚假 start code (00 00 00 01) 破坏 H.264 解析
                 h264_offset+=cl
-                data=pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=0,chunk=raw)
+                data=pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=len(raw),chunk=raw)
                 frame_id=(frame_id+1)&0xFFFF; pub_chunks+=1
             else:
                 cl=int(args.h264_chunk_len)
@@ -187,8 +187,8 @@ def main()->int:
                                 h264_enc_bytes+=len(pkt)
                                 for off in range(0,len(pkt),cl):
                                     c=pkt[off:off+cl]
-                                    if len(c)<cl: c+=b"\x00"*(cl-len(c))
-                                    h264_chunk_buf.append(pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=0,chunk=c))
+                                    # 不再补零——补零会引入虚假 start code 破坏 H.264 解析
+                                    h264_chunk_buf.append(pack_fragment(frame_id=frame_id,frag_idx=0,frag_cnt=1,codec=CODEC_H264,flags=0,total_len=len(c),chunk=c))
                                     pub_chunks+=1
                             h264_frame_count+=1; frame_id=(frame_id+1)&0xFFFF
                         except Exception as e:
