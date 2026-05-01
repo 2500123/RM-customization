@@ -118,10 +118,8 @@ class VideoDecoderNode(Node):
             self._reset_decoder(reason='sequence gap')
         self.last_seq = msg.sequence_id
 
-        # Strip trailing zero-padding (encoder emits fixed-size 280B arrays)
-        chunk = bytes(msg.data).rstrip(b'\x00')
-        if not chunk:
-            return
+        # chunk is exactly 280B Annex‑B H.264 (encoder fills to 280)
+        chunk = bytes(msg.data)
 
         try:
             parsed_packets = self.codec.parse(chunk)

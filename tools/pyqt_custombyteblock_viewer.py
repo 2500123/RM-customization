@@ -456,12 +456,11 @@ def main() -> int:
                         continue
 
                     # ── 零填充去除 ──
-                    # fragment header 的 total_len 是桥接端 rstri'p 后的精确长度；
-                    # 直接用它截断，不再次 rstrip（避免切除 H.264 NAL 尾部的合法零字节）。
+                    # total_len 由桥接端设为 280（精确值）；直接按 total_len 截断。
+                    # 串口路径下 chunk 可能含补零尾（serial_bridge 补到 300B），
+                    # total_len 精确告知有效数据长度，比 rstrip 安全（不会切除合法零字节）。
                     if hdr.total_len > 0 and hdr.total_len <= len(chunk):
                         chunk = chunk[:hdr.total_len]
-                    else:
-                        chunk = chunk.rstrip(b'\x00')
                     if not chunk:
                         continue
 

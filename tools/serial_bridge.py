@@ -145,16 +145,12 @@ def main() -> int:
             nonlocal ros_rx, serial_tx, drop_count, seq_counter
             ros_rx += 1
 
-            # 包装 H.264 chunk (8B 片段头 + payload) → 可变长度
-            chunk = bytes(msg.data)
-            # Strip trailing zero-padding before computing total_len
-            chunk = chunk.rstrip(b'\x00')
-            if not chunk:
-                return
+            # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
+            chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
-                codec=CODEC_H264, flags=0, total_len=len(chunk), chunk=chunk,
+                codec=CODEC_H264, flags=0, total_len=280, chunk=chunk,
             )
             # 补零到 300B，使 data_length=300，MCU 直转无需再补
             if len(frag) < 300:

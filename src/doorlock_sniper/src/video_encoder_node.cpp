@@ -579,7 +579,7 @@ void VideoEncoderNode::push_frame_to_gstreamer(const cv::Mat & frame)
   gst_buffer_unref(buffer);
 }
 
-// 150B 分包 + 带宽窗口限速 + 队列时延上限
+// 280B 盲切分包 + 带宽窗口限速 + 队列时延上限
 void VideoEncoderNode::pull_stream_and_packetize()
 {
   if (!appsink_) return;
