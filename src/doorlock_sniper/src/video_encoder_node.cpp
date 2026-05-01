@@ -256,11 +256,12 @@ void VideoEncoderNode::initialize_gstreamer()
 
   const bool low_bitrate_mode = (param_target_bitrate_ <= 80);
   // Robust GOP for lossy transports (serial→MCU→MQTT):
-  //   key-int-max=1  ALL IDR frames — every packet is independently decodable
-  //   bframes=0       no B-frames
-  //   ref=1           single reference
-  const int key_int = 1;  // every frame is IDR: safe against heavy packet loss
-  const int default_speed_preset = low_bitrate_mode ? 6 : 3;  // medium / veryfast
+  //   key-int~0.5s   short GOP — quick recovery, IDR not too frequent
+  //   bframes=0      no B-frames
+  //   ref=1          single reference
+  //   ultrafast      lowest latency, smallest frame-size spikes
+  const int key_int = std::max(param_output_fps_ / 2, 15);
+  const int default_speed_preset = 1;  // ultrafast — minimize frame-size spikes
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;
   std::transform(
