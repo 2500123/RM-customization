@@ -142,33 +142,6 @@ def _import_qt():
                 )
 
 
-# ── H.264 NAL 快速扫描 (SPS/PPS 检测, 4B + 3B start codes) ──────────
-_START_4 = b"\x00\x00\x00\x01"
-_START_3 = b"\x00\x00\x01"
-
-
-def _has_sps_pps(data: bytes) -> bool:
-    """Scan bytes for SPS (type 7) or PPS (type 8) NAL unit."""
-    n = len(data)
-    i = 0
-    while i < n - 3:
-        if i + 4 <= n and data[i:i + 4] == _START_4:
-            if i + 5 <= n:
-                nt = data[i + 4] & 0x1F
-                if nt in (7, 8):
-                    return True
-            i += 5
-        elif data[i:i + 3] == _START_3:
-            if i + 4 <= n:
-                nt = data[i + 3] & 0x1F
-                if nt in (7, 8):
-                    return True
-            i += 4
-        else:
-            i += 1
-    return False
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="RoboMaster 自定义数据流图形化接收端",
@@ -493,12 +466,14 @@ def main() -> int:
                         bad_msgs += 1
                         continue
 
-                    # ── 丢包检测 ──
+                    # ── 丢包检测 (跳过大间隙：关键帧过滤导致 frame_id 跳跃上百) ──
                     if last_frame_id is not None:
                         diff = (hdr.frame_id - last_frame_id) & 0xFFFF
-                        if diff > 1:
+                        if 1 < diff <= 60:  # GOP 内正常丢包，超过 60 视为关键帧跳跃
                             gap_count += 1
                             lost_pkts += diff - 1
+                        elif diff > 60:
+                            gap_count += 1  # 记录但不计丢包
                     last_frame_id = hdr.frame_id
 
                     # ── 零填充去除 ──
@@ -506,16 +481,6 @@ def main() -> int:
                         chunk = chunk[:hdr.total_len]
                     if not chunk:
                         continue
-
-                    # ── SPS/PPS 检测：发现新关键帧头部时重建解码器 ──
-                    if _h264_codec is not None and _has_sps_pps(chunk):
-                        try:
-                            import av as _av
-                            _h264_codec = _av.CodecContext.create("h264", "r")
-                            _h264_codec.thread_type = "FRAME"
-                            _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
-                        except Exception:
-                            pass
 
                     # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
                     try:
