@@ -8,6 +8,7 @@ Type=simple
 User=rmnuc1
 WorkingDirectory=/home/rmnuc1/RM-customization
 Environment="HOME=/home/rmnuc1"
+Environment="LD_LIBRARY_PATH=/opt/MVS/lib/64"
 StandardInput=null
 
 ExecStart=/bin/bash /home/rmnuc1/RM-customization/deploy/start-ros-pipeline.sh
