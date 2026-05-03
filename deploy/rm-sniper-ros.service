@@ -5,11 +5,11 @@ Wants=local-fs.target
 
 [Service]
 Type=simple
-User=hyc
-WorkingDirectory=/home/hyc/002/Pacific_doorlock_sniper
-Environment="HOME=/home/hyc"
+User=rmnuc1
+WorkingDirectory=/home/rmnuc1/RM-customization
+Environment="HOME=/home/rmnuc1"
 
-ExecStart=/bin/bash /home/hyc/002/Pacific_doorlock_sniper/deploy/start-ros-pipeline.sh
+ExecStart=/bin/bash /home/rmnuc1/RM-customization/deploy/start-ros-pipeline.sh
 
 Restart=on-failure
 RestartSec=3

@@ -5,7 +5,7 @@
 set -e
 
 source /opt/ros/humble/setup.bash
-source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash
+source /home/rmnuc1/RM-customization/install/setup.bash
 
 echo "[sniper] Starting ROS pipeline..."
 exec ros2 launch bringup sniper.launch.py
