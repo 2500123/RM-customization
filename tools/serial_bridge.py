@@ -226,30 +226,32 @@ def main() -> int:
             if not args.no_keyframe_filter:
                 now = time.monotonic()
 
-                # 检测到 SPS/PPS → 新 burst 开始
-                if _has_sps_pps(chunk):
-                    in_burst = True
-                    # 节流：至少间隔 keyframe_interval 秒才发下一个 burst
+                is_sps_pps = _has_sps_pps(chunk)
+                if is_sps_pps:
                     if args.keyframe_interval > 0:
                         if now - last_kf_time < args.keyframe_interval:
-                            pframe_skip += 1
-                            return
-                    last_kf_time = now
-                    kf_sent += 1
+                            # 冷却期内：只发 SPS/PPS chunk，不开新 burst
+                            pass
+                        else:
+                            in_burst = True
+                            last_kf_time = now
+                            kf_sent += 1
+                    else:
+                        in_burst = True
+                        kf_sent += 1
 
-                # 不在 burst 且 grace 用尽 → 丢弃
-                if not in_burst and grace_chunks <= 0:
-                    pframe_skip += 1
-                    return
+                # SPS/PPS 永远发送，不受 burst/grace 限制
+                if not is_sps_pps:
+                    if not in_burst and grace_chunks <= 0:
+                        pframe_skip += 1
+                        return
 
-                # burst 已结束但在 grace 窗口内 → 继续发送，递减计数
-                if not in_burst:
-                    grace_chunks -= 1
+                    if not in_burst:
+                        grace_chunks -= 1
 
-                # 检测到 P-slice NAL → burst 即将结束，多送 1 个 chunk 补齐跨边界 NAL
-                if in_burst and _first_non_kf_nal(chunk):
-                    in_burst = False
-                    grace_chunks = 1
+                    if in_burst and _first_non_kf_nal(chunk):
+                        in_burst = False
+                        grace_chunks = 1
 
                 # burst 内的 chunk，直接放行
             else:

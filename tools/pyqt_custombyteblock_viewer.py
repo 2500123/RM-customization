@@ -508,32 +508,16 @@ def main() -> int:
                     if not chunk:
                         continue
 
-                    # ── 垃圾数据过滤：无 NAL start code 的 chunk 直接丢弃 ──
-                    # (MQTT broker 上残留的旧数据可能导致 PyAV 永久损坏)
-                    if not (b'\x00\x00\x00\x01' in chunk or b'\x00\x00\x01' in chunk):
-                        continue
-
-                    # ── SPS/PPS 出现 → 新关键帧 burst → 重建干净解码器 ──
-                    if _has_sps_pps(chunk):
-                        if _h264_codec is not None:
-                            try:
-                                import av as _av
-                                _h264_codec = _av.CodecContext.create("h264", "r")
-                                _h264_codec.thread_type = "FRAME"
-                                _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
-                            except Exception:
-                                pass
-                    elif _h264_codec is None:
+                    if _h264_codec is None:
                         try:
                             import av as _av
                             _h264_codec = _av.CodecContext.create("h264", "r")
                             _h264_codec.thread_type = "FRAME"
                             _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
                         except Exception:
-                            pass
-
-                    if _h264_codec is None:
-                        continue
+                            _h264_codec = None
+                        if _h264_codec is None:
+                            continue
 
                     # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
                     try:
