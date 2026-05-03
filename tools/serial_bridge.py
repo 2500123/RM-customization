@@ -27,72 +27,52 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(__file__))
 from custom_byteblock_codec import CODEC_H264, pack_fragment
 
-# ── H.264 NAL unit types ───────────────────────────────────────────────
-NAL_TYPE_NON_IDR = 1
-NAL_TYPE_IDR = 5
-NAL_TYPE_SEI = 6
-NAL_TYPE_SPS = 7
-NAL_TYPE_PPS = 8
-NAL_TYPE_AUD = 9
-
-_START_CODE_4 = b"\x00\x00\x00\x01"
-_START_CODE_3 = b"\x00\x00\x01"
+# ── H.264 NAL start-code matching ──────────────────────────────────────
+_ST4 = b"\x00\x00\x00\x01"
+_ST3 = b"\x00\x00\x01"
 
 
-class KeyframeGate:
-    """Scan H.264 Annex‑B stream for keyframe NAL units.
+def _has_sps_pps(data: bytes) -> bool:
+    """Return True if *data* contains an SPS (type 7) or PPS (type 8) NAL unit."""
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            if i + 5 <= n and (data[i + 4] & 0x1F) in (7, 8):
+                return True
+            i += 5
+        elif data[i:i + 3] == _ST3:
+            if i + 4 <= n and (data[i + 3] & 0x1F) in (7, 8):
+                return True
+            i += 4
+        else:
+            i += 1
+    return False
 
-    Encoder: repeat-headers=1, bframes=0 → SPS/PPS before every IDR.
-    Detects SPS/PPS/IDR → in_keyframe=True; first P-slice → False.
 
-    ``burst_start`` is True on the first chunk of a new keyframe burst
-    (rising edge: P→IDR transition).  Throttle should gate ONLY on
-    burst_start, so all chunks of the same IDR pass through.
-    """
+def _has_any_nal(data: bytes) -> bool:
+    """Check for any NAL start code in *data* (quick garbage filter)."""
+    return _ST4 in data or _ST3 in data
 
-    def __init__(self):
-        self._in_keyframe = False
-        self._burst_start = False
 
-    def feed(self, chunk: bytes) -> bool:
-        was_kf = self._in_keyframe
-        self._burst_start = False  # reset per chunk
-        data = chunk
-        n = len(data)
-        i = 0
-        while i < n - 3:
-            if i + 4 <= n and data[i:i + 4] == _START_CODE_4:
-                if i + 5 <= n:
-                    self._update(data[i + 4] & 0x1F)
-                i += 5
-            elif data[i:i + 3] == _START_CODE_3:
-                if i + 4 <= n:
-                    self._update(data[i + 3] & 0x1F)
-                i += 4
-            else:
-                i += 1
-        # rising edge: was P-frame, now IDR → new burst
-        if not was_kf and self._in_keyframe:
-            self._burst_start = True
-        return self._in_keyframe
-
-    def _update(self, nal_type: int) -> None:
-        if nal_type in (NAL_TYPE_SPS, NAL_TYPE_PPS, NAL_TYPE_IDR, NAL_TYPE_SEI, NAL_TYPE_AUD):
-            self._in_keyframe = True
-        elif nal_type in (NAL_TYPE_NON_IDR,):
-            self._in_keyframe = False
-
-    def reset(self) -> None:
-        self._in_keyframe = False
-        self._burst_start = False
-
-    @property
-    def in_keyframe(self) -> bool:
-        return self._in_keyframe
-
-    @property
-    def burst_start(self) -> bool:
-        return self._burst_start
+def _first_non_kf_nal(data: bytes) -> bool:
+    """Return True if first NAL unit in *data* is a non-keyframe slice (type 1-4)."""
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            if i + 5 <= n:
+                nt = data[i + 4] & 0x1F
+                return nt in (1, 2, 3, 4)
+            return False
+        elif data[i:i + 3] == _ST3:
+            if i + 4 <= n:
+                nt = data[i + 3] & 0x1F
+                return nt in (1, 2, 3, 4)
+            return False
+        else:
+            i += 1
+    return False
 
 
 # ----------------------------------------------------------------------
@@ -202,18 +182,17 @@ def main() -> int:
     drop_count = 0
     seq_counter = 0
     skip_count = 0          # 因限速跳过的包数
-    pframe_skip = 0         # P 帧被过滤的包数
-    keyframe_bursts = 0     # 关键帧突发次数
-    sent_frame_counter = 0  # 实际发送 chunk 的连续编号 (用于接收端准确检测丢包)
+    pframe_skip = 0         # 被过滤的 chunk 总数
+    kf_sent = 0             # 实际发出的关键帧 burst 数
+    sent_frame_counter = 0  # 实际发送 chunk 的连续编号
+    last_kf_time = 0.0      # 上次发出关键帧 burst 的时刻
+    in_burst = False        # 当前是否在关键帧突发内
     min_interval = 1.0 / max(args.send_rate, 1)
     last_send_time = 0.0
-    last_keyframe_send = 0.0
-
-    gate = KeyframeGate()
 
     print(f"[serial] Send rate limit: {args.send_rate} pkt/s (min interval {min_interval*1000:.1f} ms)")
     print(f"[serial] Keyframe filter: {'OFF' if args.no_keyframe_filter else f'ON (interval {args.keyframe_interval}s)'}")
-    print(f"[serial] Redundancy: {args.redundancy}x (effective max rate ~{args.send_rate/args.redundancy:.0f} pkt/s)")
+    print(f"[serial] Redundancy: {args.redundancy}x")
 
     # ── ROS 节点 ──
     class SerialBridgeNode(Node):
@@ -233,36 +212,41 @@ def main() -> int:
 
         def _on_packet(self, msg: VideoPacket) -> None:
             nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter
-            nonlocal last_send_time, pframe_skip, keyframe_bursts, last_keyframe_send
-            nonlocal sent_frame_counter
+            nonlocal last_send_time, pframe_skip, kf_sent, last_kf_time
+            nonlocal sent_frame_counter, in_burst
             ros_rx += 1
 
             chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
 
-            # ── 关键帧过滤 ──
+            # ── 关键帧模式 ──
             if not args.no_keyframe_filter:
-                is_kf = gate.feed(chunk)
-                if not is_kf:
-                    pframe_skip += 1
-                    return
-                # Throttle: gate only on burst START (P→IDR transition),
-                # so all chunks of the same IDR pass through.
-                if gate.burst_start:
-                    now = time.monotonic()
-                    if args.keyframe_interval > 0:
-                        if now - last_keyframe_send < args.keyframe_interval:
-                            gate.reset()  # 重置状态，后续 chunk 也被过滤
-                            return
-                        last_keyframe_send = now
-                    keyframe_bursts += 1
-                now = time.monotonic()
-            else:
                 now = time.monotonic()
 
-            # ── 发送限速：仅在非关键帧模式下生效 ──
-            # 关键帧模式已由 --keyframe-interval 控制节奏，突发内所有 chunk
-            # 必须完整发送，否则 H.264 数据残缺导致画面花屏。
-            if args.no_keyframe_filter:
+                # 检测到 SPS/PPS → 新 burst 开始
+                if _has_sps_pps(chunk):
+                    in_burst = True
+                    # 节流：至少间隔 keyframe_interval 秒才发下一个 burst
+                    if args.keyframe_interval > 0:
+                        if now - last_kf_time < args.keyframe_interval:
+                            pframe_skip += 1
+                            return
+                    last_kf_time = now
+                    kf_sent += 1
+
+                # 不在 burst 内 → 丢弃
+                if not in_burst:
+                    pframe_skip += 1
+                    return
+
+                # 第一个非关键帧 NAL 出现 → 下一个 chunk 开始不再放行
+                # 但当前 chunk 可能混杂关键帧数据，仍发送
+                if _first_non_kf_nal(chunk):
+                    in_burst = False
+
+                # burst 内的 chunk，直接放行
+            else:
+                now = time.monotonic()
+                # 全量模式：限速
                 if now - last_send_time < min_interval:
                     skip_count += 1
                     return
@@ -311,18 +295,18 @@ def main() -> int:
                 dr = ros_rx - last_ros
                 ds = serial_tx - last_tx
                 dp = pframe_skip - last_pframe
-                db = keyframe_bursts - last_bursts
+                db = kf_sent - last_bursts
                 print(
                     f"[serial] ROS rx={ros_rx} (+{dr}, {dr/dt:.0f} pkt/s) | "
                     f"Serial tx={serial_tx} (+{ds}, {ds/dt:.0f} pkt/s) | "
                     f"drops={drop_count} skipped={skip_count} | "
-                    f"P-skip={pframe_skip} (+{dp}) kf-bursts={keyframe_bursts} (+{db})"
+                    f"P-skip={pframe_skip} (+{dp}) kf-sent={kf_sent} (+{db})"
                 )
                 last_stat = time.monotonic()
                 last_ros = ros_rx
                 last_tx = serial_tx
                 last_pframe = pframe_skip
-                last_bursts = keyframe_bursts
+                last_bursts = kf_sent
     except KeyboardInterrupt:
         pass
     finally:
