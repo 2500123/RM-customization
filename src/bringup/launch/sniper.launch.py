@@ -22,7 +22,7 @@ def generate_launch_description():
     dump_save_decoder = True          # 保存解码端窗口
 
     # 码率策略（单位：kB/s）
-    target_bitrate_kbytes = 10.0       # 目标编码码率
+    target_bitrate_kbytes = 10.0       # 目标编码码率 — 不动，带宽窗口只有 14 kB/s
     hard_max_bitrate_kbytes = 14.0     # 传输硬上限（由发送窗口限速实现）
     target_bitrate_kbps = int(target_bitrate_kbytes * 8.0)  # x264 参数单位是 kbps
     x264_preset = 'fast'               # x264 速度预设：编码器自动选择，fast 平衡延迟/压缩

@@ -25,7 +25,9 @@ ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/hyc/002/Pacific_doorlock_sniper/install/setup.bash && \
   exec python3 /home/hyc/002/Pacific_doorlock_sniper/tools/serial_bridge.py \
-    --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats --send-rate 40'
+    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
+    --send-rate 40 --redundancy 1 --chunk-delay-ms 20 --keyframe-interval 0.25 \
+    --print-stats'
 
 Restart=on-failure
 RestartSec=5

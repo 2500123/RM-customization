@@ -10,10 +10,10 @@ RoboMaster 2026 **英雄部署模式**下，官方图传和自定义客户端图
 
 | 特性 | 说明 |
 |------|------|
-| 链路 | 串口 (下位机 `0x0310`) → 裁判系统 MQTT `CustomByteBlock`，300B/pkt，50Hz |
-| 编码 | H.264 (x264)，`veryslow` 最大化压缩 |
+| 链路 | 串口 (下位机 `0x0310`) → 裁判系统 MQTT `CustomByteBlock`，300B/pkt，burst ~15 chunk/帧 |
+| 编码 | H.264 (x264)，`fast` 平衡延迟与压缩 |
 | 码率 | 目标 10 kB/s，硬限制 14 kB/s |
-| 部署模式 | ✅ 不受影响 |
+| 关键帧模式 | SPS/PPS 优先发送，P 帧过滤，节流可调 |
 
 **项目结构**
 
@@ -99,10 +99,14 @@ cd tools && protoc --python_out=. custom_byteblock.proto && cd ..
 colcon build && source install/setup.bash
 ros2 launch bringup sniper.launch.py
 
-# 终端 2: 串口桥接 (ROS → 下位机)
-# --send-rate 限制串口发送速率，不超过 MCU 处理能力，降低丢包
+# 终端 2: 串口桥接 (ROS → 下位机, 关键帧模式)
+# --send-rate 串口速率上限  --chunk-delay-ms burst 内 chunk 间隔
+# --keyframe-interval 节流间隔 (0=不节流 ~5fps)
 source install/setup.bash
-python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1 --print-stats --send-rate 40
+python3 tools/serial_bridge.py \
+    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
+    --send-rate 40 --redundancy 1 --chunk-delay-ms 20 \
+    --keyframe-interval 0.25 --print-stats
 ```
 
 **串口帧格式 (cmd=0x0310，机器人自定义数据上传):**
