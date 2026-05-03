@@ -189,6 +189,7 @@ def main() -> int:
     sent_frame_counter = 0  # 实际发送 chunk 的连续编号
     last_kf_time = 0.0      # 上次发出关键帧 burst 的时刻
     in_burst = False        # 当前是否在关键帧突发内
+    grace_chunks = 0        # burst 结束后多送的 chunk 数（完成跨 chunk 的 NAL 分片）
     min_interval = 1.0 / max(args.send_rate, 1)
     last_send_time = 0.0
 
@@ -216,7 +217,7 @@ def main() -> int:
         def _on_packet(self, msg: VideoPacket) -> None:
             nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter
             nonlocal last_send_time, pframe_skip, kf_sent, last_kf_time
-            nonlocal sent_frame_counter, in_burst
+            nonlocal sent_frame_counter, in_burst, grace_chunks
             ros_rx += 1
 
             chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
@@ -236,15 +237,19 @@ def main() -> int:
                     last_kf_time = now
                     kf_sent += 1
 
-                # 不在 burst 内 → 丢弃
-                if not in_burst:
+                # 不在 burst 且 grace 用尽 → 丢弃
+                if not in_burst and grace_chunks <= 0:
                     pframe_skip += 1
                     return
 
-                # 第一个非关键帧 NAL 出现 → 下一个 chunk 开始不再放行
-                # 但当前 chunk 可能混杂关键帧数据，仍发送
-                if _first_non_kf_nal(chunk):
+                # burst 已结束但在 grace 窗口内 → 继续发送，递减计数
+                if not in_burst:
+                    grace_chunks -= 1
+
+                # 检测到 P-slice NAL → burst 即将结束，多送 1 个 chunk 补齐跨边界 NAL
+                if in_burst and _first_non_kf_nal(chunk):
                     in_burst = False
+                    grace_chunks = 1
 
                 # burst 内的 chunk，直接放行
             else:
