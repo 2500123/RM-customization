@@ -204,6 +204,7 @@ def main() -> int:
     skip_count = 0          # 因限速跳过的包数
     pframe_skip = 0         # P 帧被过滤的包数
     keyframe_bursts = 0     # 关键帧突发次数
+    sent_frame_counter = 0  # 实际发送 chunk 的连续编号 (用于接收端准确检测丢包)
     min_interval = 1.0 / max(args.send_rate, 1)
     last_send_time = 0.0
     last_keyframe_send = 0.0
@@ -233,6 +234,7 @@ def main() -> int:
         def _on_packet(self, msg: VideoPacket) -> None:
             nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter
             nonlocal last_send_time, pframe_skip, keyframe_bursts, last_keyframe_send
+            nonlocal sent_frame_counter
             ros_rx += 1
 
             chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
@@ -263,7 +265,9 @@ def main() -> int:
             last_send_time = now
 
             # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
-            frame_id = int(msg.sequence_id) & 0xFFFF
+            # 使用发送端连续编号代替原始 sequence_id，接收端可准确检测丢包
+            frame_id = sent_frame_counter & 0xFFFF
+            sent_frame_counter += 1
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
                 codec=CODEC_H264, flags=0, total_len=280, chunk=chunk,
