@@ -142,6 +142,29 @@ def _import_qt():
                 )
 
 
+# ── H.264 NAL start-code scan (SPS=7, PPS=8) ───────────────────────────
+_ST4 = b"\x00\x00\x00\x01"
+_ST3 = b"\x00\x00\x01"
+
+
+def _has_sps_pps(data: bytes) -> bool:
+    """Return True if *data* contains an SPS (type 7) or PPS (type 8) NAL unit."""
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            if i + 5 <= n and (data[i + 4] & 0x1F) in (7, 8):
+                return True
+            i += 5
+        elif data[i:i + 3] == _ST3:
+            if i + 4 <= n and (data[i + 3] & 0x1F) in (7, 8):
+                return True
+            i += 4
+        else:
+            i += 1
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="RoboMaster 自定义数据流图形化接收端",
@@ -466,21 +489,12 @@ def main() -> int:
                         bad_msgs += 1
                         continue
 
-                    # ── 丢包检测 + 解码器自动恢复 ──
+                    # ── 丢包检测 ──
                     if last_frame_id is not None:
                         diff = (hdr.frame_id - last_frame_id) & 0xFFFF
                         if diff > 1:
                             gap_count += 1
                             lost_pkts += diff - 1
-                            # 任何间隙都立即重建解码器，防止旧状态污染新 burst
-                            if _h264_codec is not None:
-                                try:
-                                    import av as _av
-                                    _h264_codec = _av.CodecContext.create("h264", "r")
-                                    _h264_codec.thread_type = "FRAME"
-                                    _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
-                                except Exception:
-                                    pass
                     last_frame_id = hdr.frame_id
 
                     # ── 零填充去除 ──
@@ -489,9 +503,40 @@ def main() -> int:
                     if not chunk:
                         continue
 
+                    # ── 垃圾数据过滤：无 NAL start code 的 chunk 直接丢弃 ──
+                    # (MQTT broker 上残留的旧数据可能导致 PyAV 永久损坏)
+                    if not (b'\x00\x00\x00\x01' in chunk or b'\x00\x00\x01' in chunk):
+                        continue
+
+                    # ── SPS/PPS 出现 → 新关键帧 burst → 重建干净解码器 ──
+                    if _has_sps_pps(chunk):
+                        if _h264_codec is not None:
+                            try:
+                                import av as _av
+                                _h264_codec = _av.CodecContext.create("h264", "r")
+                                _h264_codec.thread_type = "FRAME"
+                                _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                            except Exception:
+                                pass
+                    elif _h264_codec is None:
+                        try:
+                            import av as _av
+                            _h264_codec = _av.CodecContext.create("h264", "r")
+                            _h264_codec.thread_type = "FRAME"
+                            _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                        except Exception:
+                            pass
+
+                    if _h264_codec is None:
+                        continue
+
                     # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
                     try:
                         packets = _h264_codec.parse(chunk)
+                    except Exception:
+                        h264_parse_errors += 1
+                        continue
+                    try:
                         for pkt in packets:
                             try:
                                 frames = _h264_codec.decode(pkt)
