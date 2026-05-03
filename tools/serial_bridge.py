@@ -44,12 +44,19 @@ class KeyframeGate:
 
     Encoder: repeat-headers=1, bframes=0 → SPS/PPS before every IDR.
     Detects SPS/PPS/IDR → in_keyframe=True; first P-slice → False.
+
+    ``burst_start`` is True on the first chunk of a new keyframe burst
+    (rising edge: P→IDR transition).  Throttle should gate ONLY on
+    burst_start, so all chunks of the same IDR pass through.
     """
 
     def __init__(self):
         self._in_keyframe = False
+        self._burst_start = False
 
     def feed(self, chunk: bytes) -> bool:
+        was_kf = self._in_keyframe
+        self._burst_start = False  # reset per chunk
         data = chunk
         n = len(data)
         i = 0
@@ -64,6 +71,9 @@ class KeyframeGate:
                 i += 4
             else:
                 i += 1
+        # rising edge: was P-frame, now IDR → new burst
+        if not was_kf and self._in_keyframe:
+            self._burst_start = True
         return self._in_keyframe
 
     def _update(self, nal_type: int) -> None:
@@ -74,10 +84,15 @@ class KeyframeGate:
 
     def reset(self) -> None:
         self._in_keyframe = False
+        self._burst_start = False
 
     @property
     def in_keyframe(self) -> bool:
         return self._in_keyframe
+
+    @property
+    def burst_start(self) -> bool:
+        return self._burst_start
 
 
 # ----------------------------------------------------------------------
@@ -228,13 +243,16 @@ def main() -> int:
                 if not is_kf:
                     pframe_skip += 1
                     return
-                # Throttle: enforce minimum interval between keyframe bursts
+                # Throttle: gate only on burst START (P→IDR transition),
+                # so all chunks of the same IDR pass through.
+                if gate.burst_start:
+                    now = time.monotonic()
+                    if args.keyframe_interval > 0:
+                        if now - last_keyframe_send < args.keyframe_interval:
+                            return  # skip this entire burst
+                        last_keyframe_send = now
+                    keyframe_bursts += 1
                 now = time.monotonic()
-                if args.keyframe_interval > 0:
-                    if now - last_keyframe_send < args.keyframe_interval:
-                        return
-                    last_keyframe_send = now
-                keyframe_bursts += 1
             else:
                 now = time.monotonic()
 
