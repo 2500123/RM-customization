@@ -8,15 +8,12 @@ Type=simple
 User=rmnuc1
 WorkingDirectory=/home/rmnuc1/RM-customization
 Environment="HOME=/home/rmnuc1"
+StandardInput=null
 
 ExecStart=/bin/bash /home/rmnuc1/RM-customization/deploy/start-ros-pipeline.sh
 
 Restart=on-failure
 RestartSec=3
-
-# USB camera access
-DeviceAllow=/dev/bus/usb rw
-DevicePolicy=strict
 
 [Install]
 WantedBy=multi-user.target
