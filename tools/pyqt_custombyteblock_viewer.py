@@ -484,9 +484,14 @@ def main() -> int:
                         hdr, chunk = unpack_fragment(data)
                     except Exception:
                         bad_msgs += 1
+                        # 每 10 个坏消息打印一次前 20 字节 hex，用于诊断
+                        if bad_msgs % 10 == 0:
+                            print(f"[viewer] BAD#{bad_msgs}: data[:20]={data[:20].hex()}", flush=True)
                         continue
                     if hdr.codec != CODEC_H264:
                         bad_msgs += 1
+                        if bad_msgs % 10 == 0:
+                            print(f"[viewer] BAD#{bad_msgs}: wrong codec={hdr.codec}", flush=True)
                         continue
 
                     # ── 丢包检测 ──
