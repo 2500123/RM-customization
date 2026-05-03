@@ -251,7 +251,8 @@ def main() -> int:
                     now = time.monotonic()
                     if args.keyframe_interval > 0:
                         if now - last_keyframe_send < args.keyframe_interval:
-                            return  # skip this entire burst
+                            gate.reset()  # 重置状态，后续 chunk 也被过滤
+                            return
                         last_keyframe_send = now
                     keyframe_bursts += 1
                 now = time.monotonic()
