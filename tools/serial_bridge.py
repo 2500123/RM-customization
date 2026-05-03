@@ -258,11 +258,14 @@ def main() -> int:
             else:
                 now = time.monotonic()
 
-            # ── 发送限速：不超过 MCU 串口处理能力 ──
-            if now - last_send_time < min_interval:
-                skip_count += 1
-                return
-            last_send_time = now
+            # ── 发送限速：仅在非关键帧模式下生效 ──
+            # 关键帧模式已由 --keyframe-interval 控制节奏，突发内所有 chunk
+            # 必须完整发送，否则 H.264 数据残缺导致画面花屏。
+            if args.no_keyframe_filter:
+                if now - last_send_time < min_interval:
+                    skip_count += 1
+                    return
+                last_send_time = now
 
             # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
             # 使用发送端连续编号代替原始 sequence_id，接收端可准确检测丢包
