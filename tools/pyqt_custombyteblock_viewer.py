@@ -466,14 +466,21 @@ def main() -> int:
                         bad_msgs += 1
                         continue
 
-                    # ── 丢包检测 (跳过大间隙：关键帧过滤导致 frame_id 跳跃上百) ──
+                    # ── 丢包检测 + 解码器自动恢复 ──
                     if last_frame_id is not None:
                         diff = (hdr.frame_id - last_frame_id) & 0xFFFF
-                        if 1 < diff <= 60:  # GOP 内正常丢包，超过 60 视为关键帧跳跃
+                        if diff > 1:
                             gap_count += 1
                             lost_pkts += diff - 1
-                        elif diff > 60:
-                            gap_count += 1  # 记录但不计丢包
+                            # 任何间隙都立即重建解码器，防止旧状态污染新 burst
+                            if _h264_codec is not None:
+                                try:
+                                    import av as _av
+                                    _h264_codec = _av.CodecContext.create("h264", "r")
+                                    _h264_codec.thread_type = "FRAME"
+                                    _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                                except Exception:
+                                    pass
                     last_frame_id = hdr.frame_id
 
                     # ── 零填充去除 ──
