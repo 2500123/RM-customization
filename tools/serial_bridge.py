@@ -157,6 +157,8 @@ def main() -> int:
                     help="Disable keyframe filtering (send all packets)")
     ap.add_argument("--redundancy", type=int, default=2,
                     help="每个关键帧分片重复发送次数 (≥1, 模拟 QoS 1)")
+    ap.add_argument("--chunk-delay-ms", type=int, default=5,
+                    help="Burst 内相邻 chunk 串口写入间隔 (ms)")
     args = ap.parse_args()
 
     rclpy.init(args=sys.argv[1:])
@@ -193,6 +195,7 @@ def main() -> int:
     print(f"[serial] Send rate limit: {args.send_rate} pkt/s (min interval {min_interval*1000:.1f} ms)")
     print(f"[serial] Keyframe filter: {'OFF' if args.no_keyframe_filter else f'ON (interval {args.keyframe_interval}s)'}")
     print(f"[serial] Redundancy: {args.redundancy}x")
+    print(f"[serial] Chunk delay: {args.chunk_delay_ms}ms")
 
     # ── ROS 节点 ──
     class SerialBridgeNode(Node):
@@ -277,6 +280,10 @@ def main() -> int:
                     serial_tx += 1
                 except Exception:
                     drop_count += 1
+
+            # ── Burst 内 chunk 间隔: 串口传输本身约 3ms, 额外延迟让 MCU 完成 MQTT publish ──
+            if not args.no_keyframe_filter:
+                time.sleep(args.chunk_delay_ms / 1000.0)
 
     node = SerialBridgeNode()
 
