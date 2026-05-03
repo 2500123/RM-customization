@@ -98,7 +98,7 @@ class VideoDecoderNode(Node):
             try:
                 self.frame_queue.put_nowait(img)
             except queue.Full:
-                pass
+                self.get_logger().debug('Display queue full, dropping frame', throttle_duration_sec=5)
         elif self.frame_count % 60 == 0:
             self.get_logger().info(f'Decoded {self.frame_count} frames')
 

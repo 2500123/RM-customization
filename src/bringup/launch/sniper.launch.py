@@ -25,7 +25,7 @@ def generate_launch_description():
     target_bitrate_kbytes = 10.0       # 目标编码码率
     hard_max_bitrate_kbytes = 14.0     # 传输硬上限（由发送窗口限速实现）
     target_bitrate_kbps = int(target_bitrate_kbytes * 8.0)  # x264 参数单位是 kbps
-    x264_preset = 'veryslow'           # x264 速度预设：slow 会比veryslow更省时延但画质/压缩效率略降
+    x264_preset = 'fast'               # x264 速度预设：编码器自动选择，fast 平衡延迟/压缩
     encode_size = 300
 
     # 编码端容器（相机 + 编码器，同进程零拷贝）
@@ -54,7 +54,7 @@ def generate_launch_description():
                     {'target_bitrate': target_bitrate_kbps},             # 目标编码码率(kbps)，5kB/s -> 40kbps
                     {'x264_preset': x264_preset},                        # x264 preset: auto/ultrafast/.../veryslow
                     {'output_fps': 60},                                  # 输出帧率
-                    {'packet_size': 300},                                # 固定分包大小(byte)
+                    # packet_size 固定为 280B (VideoPacket.msg payload 大小)，C++ 强制覆盖
                     {'enable_display': False},                           # 编码端调试显示 (用 PyQt viewer 替代)
                     {'debug_dump_enable': debug_dump_enable},            # 开启后每N帧保存编码端窗口画面
                     {'debug_dump_every_n_frames': debug_dump_every_n_frames},  # 编码端保存间隔(帧)
@@ -67,12 +67,12 @@ def generate_launch_description():
                     {'output_size': encode_size},                        # 编码分辨率
                     {'static_simplify': True},                           # 静态区域简化
                     {'motion_threshold': 14},                            # 运动检测阈值
-                    {'motion_erode_px': 2},                              # 运动掩码腐蚀像素(y)
-                    {'motion_dilate_px': 6},                             # 运动掩码膨胀像素(x)
-                    {'motion_trail_frames': 90},                         # 拖影历史帧数
+                    {'motion_erode_px': 1},                              # 运动掩码腐蚀像素 (与 C++ 默认一致)
+                    {'motion_dilate_px': 2},                             # 运动掩码膨胀像素 (与 C++ 默认一致)
+                    {'motion_trail_frames': 3},                          # 拖影历史帧数 (与 C++ 默认一致，避免内存占用过高)
                     {'trail_disable_motion_ratio': 0.30},                # 全局运动比例超阈值时临时禁用拖影显示
                     {'bg_update_alpha': 0.01},                           # 背景模型更新速度
-                    {'bg_blur_sigma': 1.8},                              # 静态区模糊强度
+                    {'bg_blur_sigma': 1.2},                              # 静态区模糊强度 (与 C++ 默认一致)
                     {'center_clear_size': 150},                          # 中心保护区尺寸(像素)
                     {'force_monochrome': False},                         # 强制全画面灰度
                     {'bandwidth_limit_kbytes': hard_max_bitrate_kbytes}, # 发送硬上限(kB/s)

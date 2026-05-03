@@ -7,9 +7,9 @@
   串口协议 (Mini PC → 下位机) 遵循官方文档 V1.3.0:
     frame_header: 5B  = SOF(0xA5) + data_length(2B LE) + seq(1B) + CRC8(1B)
     cmd_id: 2B LE (0x0310)
-    data: N B (这里是 300B，已补零到 CustomByteBlock 上限)
+    data: 288B 片段 (8B 片段头 + 280B H.264 chunk) + 12B 补零 = 300B
 
-  整帧长度 = 5 + 2 + N = 7 + 300 = 307 字节
+  整帧长度 = frame_header 5B + cmd_id 2B + data 300B = 307 字节
 
 使用:
   python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1
@@ -26,6 +26,59 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(__file__))
 from custom_byteblock_codec import CODEC_H264, pack_fragment
+
+# ── H.264 NAL unit types ───────────────────────────────────────────────
+NAL_TYPE_NON_IDR = 1
+NAL_TYPE_IDR = 5
+NAL_TYPE_SEI = 6
+NAL_TYPE_SPS = 7
+NAL_TYPE_PPS = 8
+NAL_TYPE_AUD = 9
+
+_START_CODE_4 = b"\x00\x00\x00\x01"
+_START_CODE_3 = b"\x00\x00\x01"
+
+
+class KeyframeGate:
+    """Scan H.264 Annex‑B stream for keyframe NAL units.
+
+    Encoder: repeat-headers=1, bframes=0 → SPS/PPS before every IDR.
+    Detects SPS/PPS/IDR → in_keyframe=True; first P-slice → False.
+    """
+
+    def __init__(self):
+        self._in_keyframe = False
+
+    def feed(self, chunk: bytes) -> bool:
+        data = chunk
+        n = len(data)
+        i = 0
+        while i < n - 3:
+            if i + 4 <= n and data[i:i + 4] == _START_CODE_4:
+                if i + 5 <= n:
+                    self._update(data[i + 4] & 0x1F)
+                i += 5
+            elif data[i:i + 3] == _START_CODE_3:
+                if i + 4 <= n:
+                    self._update(data[i + 3] & 0x1F)
+                i += 4
+            else:
+                i += 1
+        return self._in_keyframe
+
+    def _update(self, nal_type: int) -> None:
+        if nal_type in (NAL_TYPE_SPS, NAL_TYPE_PPS, NAL_TYPE_IDR, NAL_TYPE_SEI, NAL_TYPE_AUD):
+            self._in_keyframe = True
+        elif nal_type in (NAL_TYPE_NON_IDR,):
+            self._in_keyframe = False
+
+    def reset(self) -> None:
+        self._in_keyframe = False
+
+    @property
+    def in_keyframe(self) -> bool:
+        return self._in_keyframe
+
 
 # ----------------------------------------------------------------------
 # CRC8 (x^8 + x^5 + x^4 + 1, init=0xFF) 查表法，官方附录一数据
@@ -102,6 +155,13 @@ def main() -> int:
     ap.add_argument("--cmd-id", type=int, default=0x0310, help="下位机命令ID")
     ap.add_argument("--send-rate", type=int, default=40,
                     help="串口发送速率上限 (pkt/s)，不超过 MCU 处理能力")
+    ap.add_argument(
+        "--keyframe-interval", type=float, default=1.0,
+        help="Minimum seconds between keyframe bursts (0 = every keyframe)")
+    ap.add_argument("--no-keyframe-filter", action="store_true",
+                    help="Disable keyframe filtering (send all packets)")
+    ap.add_argument("--redundancy", type=int, default=2,
+                    help="每个关键帧分片重复发送次数 (≥1, 模拟 QoS 1)")
     args = ap.parse_args()
 
     rclpy.init(args=sys.argv[1:])
@@ -126,11 +186,18 @@ def main() -> int:
     serial_tx = 0
     drop_count = 0
     seq_counter = 0
-    skip_count = 0       # 因限速跳过的包数
+    skip_count = 0          # 因限速跳过的包数
+    pframe_skip = 0         # P 帧被过滤的包数
+    keyframe_bursts = 0     # 关键帧突发次数
     min_interval = 1.0 / max(args.send_rate, 1)
     last_send_time = 0.0
+    last_keyframe_send = 0.0
+
+    gate = KeyframeGate()
 
     print(f"[serial] Send rate limit: {args.send_rate} pkt/s (min interval {min_interval*1000:.1f} ms)")
+    print(f"[serial] Keyframe filter: {'OFF' if args.no_keyframe_filter else f'ON (interval {args.keyframe_interval}s)'}")
+    print(f"[serial] Redundancy: {args.redundancy}x (effective max rate ~{args.send_rate/args.redundancy:.0f} pkt/s)")
 
     # ── ROS 节点 ──
     class SerialBridgeNode(Node):
@@ -149,18 +216,35 @@ def main() -> int:
             )
 
         def _on_packet(self, msg: VideoPacket) -> None:
-            nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter, last_send_time
+            nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter
+            nonlocal last_send_time, pframe_skip, keyframe_bursts, last_keyframe_send
             ros_rx += 1
 
+            chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
+
+            # ── 关键帧过滤 ──
+            if not args.no_keyframe_filter:
+                is_kf = gate.feed(chunk)
+                if not is_kf:
+                    pframe_skip += 1
+                    return
+                # Throttle: enforce minimum interval between keyframe bursts
+                now = time.monotonic()
+                if args.keyframe_interval > 0:
+                    if now - last_keyframe_send < args.keyframe_interval:
+                        return
+                    last_keyframe_send = now
+                keyframe_bursts += 1
+            else:
+                now = time.monotonic()
+
             # ── 发送限速：不超过 MCU 串口处理能力 ──
-            now = time.monotonic()
             if now - last_send_time < min_interval:
                 skip_count += 1
                 return
             last_send_time = now
 
             # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B
-            chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
             frame_id = int(msg.sequence_id) & 0xFFFF
             frag = pack_fragment(
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
@@ -174,11 +258,15 @@ def main() -> int:
             frame = pack_serial_frame(args.cmd_id, frag, seq=seq_counter)
             seq_counter = (seq_counter + 1) & 0xFF  # seq 范围 0-255
 
-            try:
-                ser.write(frame)
-                serial_tx += 1
-            except Exception:
-                drop_count += 1
+            # ── 冗余发送 (模拟 QoS 1): 同一帧发多次 ──
+            for _ in range(args.redundancy):
+                if _ > 0:
+                    time.sleep(0.001)  # 1ms 间隔，避免 MCU 串口 FIFO 溢出
+                try:
+                    ser.write(frame)
+                    serial_tx += 1
+                except Exception:
+                    drop_count += 1
 
     node = SerialBridgeNode()
 
@@ -186,6 +274,8 @@ def main() -> int:
     last_stat = time.monotonic()
     last_ros = 0
     last_tx = 0
+    last_pframe = 0
+    last_bursts = 0
 
     try:
         while rclpy.ok():
@@ -194,14 +284,19 @@ def main() -> int:
                 dt = time.monotonic() - last_stat
                 dr = ros_rx - last_ros
                 ds = serial_tx - last_tx
+                dp = pframe_skip - last_pframe
+                db = keyframe_bursts - last_bursts
                 print(
                     f"[serial] ROS rx={ros_rx} (+{dr}, {dr/dt:.0f} pkt/s) | "
                     f"Serial tx={serial_tx} (+{ds}, {ds/dt:.0f} pkt/s) | "
-                    f"drops={drop_count} skipped={skip_count}"
+                    f"drops={drop_count} skipped={skip_count} | "
+                    f"P-skip={pframe_skip} (+{dp}) kf-bursts={keyframe_bursts} (+{db})"
                 )
                 last_stat = time.monotonic()
                 last_ros = ros_rx
                 last_tx = serial_tx
+                last_pframe = pframe_skip
+                last_bursts = keyframe_bursts
     except KeyboardInterrupt:
         pass
     finally:
