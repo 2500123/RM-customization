@@ -484,12 +484,15 @@ def main() -> int:
                         hdr, chunk = unpack_fragment(data)
                     except Exception:
                         bad_msgs += 1
+                        lost_pkts += 1
                         continue
                     if hdr.codec != CODEC_H264:
                         bad_msgs += 1
+                        lost_pkts += 1
+                        print(f"DEBUG lost={lost_pkts} bad={bad_msgs} rx={rx_msgs}", flush=True)
                         continue
 
-                    # ── 丢包检测 ──
+                    # ── 丢包检测 (bad 消息也视为丢失) ──
                     if last_frame_id is not None:
                         diff = (hdr.frame_id - last_frame_id) & 0xFFFF
                         if diff > 1:
@@ -503,7 +506,19 @@ def main() -> int:
                     if not chunk:
                         continue
 
-                    if _h264_codec is None:
+                    # ── SPS/PPS 出现 → 重建解码器 ──
+                    if _h264_codec is None or _has_sps_pps(chunk):
+                        try:
+                            import av as _av
+                            _h264_codec = _av.CodecContext.create("h264", "r")
+                            _h264_codec.thread_type = "FRAME"
+                            _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                        except Exception:
+                            _h264_codec = None
+                        if _h264_codec is None:
+                            continue
+
+                    if _h264_codec is None or _has_sps_pps(chunk):
                         try:
                             import av as _av
                             _h264_codec = _av.CodecContext.create("h264", "r")

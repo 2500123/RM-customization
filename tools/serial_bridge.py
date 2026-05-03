@@ -50,6 +50,11 @@ def _has_sps_pps(data: bytes) -> bool:
     return False
 
 
+def _has_any_nal(data: bytes) -> bool:
+    """Check for any NAL start code in *data* (quick garbage filter)."""
+    return _ST4 in data or _ST3 in data
+
+
 def _first_non_kf_nal(data: bytes) -> bool:
     """Return True if first NAL unit in *data* is a non-keyframe slice (type 1-4)."""
     n = len(data)
