@@ -257,9 +257,12 @@ def main() -> int:
             else:
                 now = time.monotonic()
                 # 全量模式：限速
-                if now - last_send_time < min_interval:
-                    skip_count += 1
-                    return
+                # 重要：不要通过“跳包”来限速（会随机丢 280B chunk，极易破坏码流导致花屏/绿屏）。
+                # 改为节流发送：必要时 sleep，保证码流连续性；代价是可能增加端到端延迟。
+                dt = now - last_send_time
+                if dt < min_interval:
+                    time.sleep(min_interval - dt)
+                    now = time.monotonic()
                 last_send_time = now
 
             # 包装 H.264 chunk (8B 片段头 + 280B payload) → 288B

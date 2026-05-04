@@ -26,7 +26,8 @@ ExecStart=/bin/bash -c '\
   source /home/rmnuc1/RM-customization/install/setup.bash && \
   exec python3 /home/rmnuc1/RM-customization/tools/serial_bridge.py \
     --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
-    --send-rate 40 --redundancy 1 --chunk-delay-ms 20 --keyframe-interval 0.25 \
+    --no-keyframe-filter \
+    --send-rate 45 --redundancy 1 \
     --print-stats'
 
 Restart=on-failure

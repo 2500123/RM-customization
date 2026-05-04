@@ -108,6 +108,12 @@ python3 tools/serial_bridge.py \
     --send-rate 40 --redundancy 1 --chunk-delay-ms 20 \
     --keyframe-interval 0.25 --print-stats
 
+> 如果你安装过 `deploy/` 里的 systemd 自启服务（`rm-sniper-ros`/`rm-sniper-serial`），手动在终端再启动一套管线会造成“多实例抢带宽/参数不生效”。
+> 需要手动调参时，先执行：
+> 
+> - `sudo systemctl stop rm-sniper-serial rm-sniper-ros`
+> - 或 `sudo systemctl disable rm-sniper-ros rm-sniper-serial`
+
 #### 4.1.1 提高画质/帧率（发送端 CPU 有余量时）
 
 > 发送端 CPU 只有 ~20% 时，**瓶颈通常不在编码算力**，而在链路带宽与发送策略。

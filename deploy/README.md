@@ -68,9 +68,14 @@ sudo systemctl daemon-reload
 串口桥接的 `--send-rate` 参数控制发送速率上限。如果 MCU 无法跟上，降低此值：
 
 ```bash
-# 默认 40 pkt/s；如果仍有丢包，降到 20-30
+# 默认 45 pkt/s (≈ 13.8 kB/s)；如果仍有丢包，降到 20-35
 python3 tools/serial_bridge.py --send-rate 20 ...
 ```
+
+说明：
+
+- 生产链路推荐使用 `--no-keyframe-filter` 全量发送（I/P 都发），否则帧率会被关键帧节流参数限制在较低水平。
+- 当你把 `--send-rate` 拉高到接近链路上限时，画面会更流畅；但如果 MCU/裁判系统处理不过来，会出现 `lost` 增长（此时需要回退 `--send-rate`）。
 
 查看丢包率：打开 viewer `--print-stats`，看状态栏的 `lost` 百分比。
 - `lost=0%` → 链路健康
