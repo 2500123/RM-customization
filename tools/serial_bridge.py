@@ -99,6 +99,9 @@ CRC8_TAB = bytes([
     0x74, 0x2a, 0xc8, 0x96, 0x15, 0x4b, 0xa9, 0xf7, 0xb6, 0xe8, 0x0a, 0x54, 0xd7, 0x89, 0x6b, 0x35,
 ])
 
+if __debug__:
+    assert len(CRC8_TAB) == 256, f"CRC8_TAB length must be 256, got {len(CRC8_TAB)}"
+
 def crc8(data: bytes, init: int = 0xFF) -> int:
     """计算 CRC8，多项式 x^8+x^5+x^4+1，初始值 0xFF"""
     crc = init
@@ -141,6 +144,9 @@ CRC16_TABLE = [
     0xf78f, 0xe606, 0xd49d, 0xc514, 0xb1ab, 0xa022, 0x92b9, 0x8330,
     0x7bc7, 0x6a4e, 0x58d5, 0x495c, 0x3de3, 0x2c6a, 0x1ef1, 0x0f78
 ]
+
+if __debug__:
+    assert len(CRC16_TABLE) == 256, f"CRC16_TABLE length must be 256, got {len(CRC16_TABLE)}"
 
 def crc16(data: bytes, init: int = 0xFFFF) -> int:
     crc = init

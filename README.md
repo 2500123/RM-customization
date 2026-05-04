@@ -124,12 +124,14 @@ python3 tools/serial_bridge.py \
     --send-rate 45 --redundancy 1 \
     --print-stats
 ```
+```bash
 python3 tools/serial_bridge.py \
     --device /dev/ttyCH341USB0 \
     --baud 921600 --robot-id 1 \
     --no-keyframe-filter \
     --send-rate 45 --redundancy 1 \
     --print-stats
+```
 
 说明：
 
