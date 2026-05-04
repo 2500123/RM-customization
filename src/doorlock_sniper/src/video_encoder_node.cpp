@@ -276,7 +276,7 @@ void VideoEncoderNode::initialize_gstreamer()
   //   bframes=0      no B-frames
   //   ref=1          single reference
   //   ultrafast      lowest latency, smallest frame-size spikes
-  const int key_int = std::max(static_cast<int>(param_output_fps_ * param_gop_seconds_), 15);
+  const int key_int = std::max(static_cast<int>(param_output_fps_ * param_gop_seconds_), 1);
   const int default_speed_preset = 1;  // ultrafast — minimize frame-size spikes
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;

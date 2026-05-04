@@ -9,6 +9,51 @@ import queue
 from pathlib import Path
 
 
+_ST4 = b"\x00\x00\x00\x01"
+_ST3 = b"\x00\x00\x01"
+
+
+def _has_sps_pps(data: bytes) -> bool:
+    """Return True if *data* contains an SPS (type 7) or PPS (type 8) NAL unit."""
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            if i + 5 <= n and (data[i + 4] & 0x1F) in (7, 8):
+                return True
+            i += 5
+        elif data[i:i + 3] == _ST3:
+            if i + 4 <= n and (data[i + 3] & 0x1F) in (7, 8):
+                return True
+            i += 4
+        else:
+            i += 1
+    return False
+
+
+def _nal_types_present(data: bytes) -> set[int]:
+    """Return set of NAL unit types observed in Annex-B *data* (best-effort)."""
+    types: set[int] = set()
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            if i + 5 <= n:
+                types.add(data[i + 4] & 0x1F)
+                if len(types) >= 4:
+                    return types
+            i += 4
+        elif data[i:i + 3] == _ST3:
+            if i + 4 <= n:
+                types.add(data[i + 3] & 0x1F)
+                if len(types) >= 4:
+                    return types
+            i += 3
+        else:
+            i += 1
+    return types
+
+
 class VideoDecoderNode(Node):
     def __init__(self):
         super().__init__('video_decoder_node')
@@ -26,6 +71,8 @@ class VideoDecoderNode(Node):
         self.declare_parameter('debug_dump_every_n_frames', 20)
         self.declare_parameter('debug_dump_save_decoder', True)
         self.declare_parameter('debug_dump_dir', 'sniper_debug_imgs')
+        self.declare_parameter('reset_gap_packets', 200)
+        self.declare_parameter('resync_buffer_max_bytes', 8192)
 
         topic = self.get_parameter('topic').value
         self.display = self.get_parameter('display').value
@@ -41,6 +88,8 @@ class VideoDecoderNode(Node):
         self.debug_dump_every_n_frames = max(1, int(self.get_parameter('debug_dump_every_n_frames').value))
         self.debug_dump_save_decoder = bool(self.get_parameter('debug_dump_save_decoder').value)
         self.debug_dump_dir = Path(str(self.get_parameter('debug_dump_dir').value)) / 'decoder'
+        self.reset_gap_packets = max(1, int(self.get_parameter('reset_gap_packets').value))
+        self.resync_buffer_max_bytes = max(1024, int(self.get_parameter('resync_buffer_max_bytes').value))
         self.display_frame_counter = 0
         if self.debug_dump_enable and self.debug_dump_save_decoder:
             self.debug_dump_dir.mkdir(parents=True, exist_ok=True)
@@ -58,6 +107,8 @@ class VideoDecoderNode(Node):
         self.parsed_packet_count = 0
         self.gap_count = 0
         self.last_seq = None
+        self._need_headers = True
+        self._pending = bytearray()
 
         # 显示队列
         if self.display:
@@ -85,6 +136,8 @@ class VideoDecoderNode(Node):
 
     def _reset_codec(self, reason=''):
         self._create_codec()
+        self._need_headers = True
+        self._pending.clear()
         self.get_logger().warn(f'Reset codec ({reason})')
 
     def _handle_decoded_frame(self, frame):
@@ -107,7 +160,12 @@ class VideoDecoderNode(Node):
         self.packet_count += 1
 
         # 丢包检测
-        if self.last_seq is not None and msg.sequence_id > self.last_seq + 3:
+        if self.last_seq is not None and msg.sequence_id <= self.last_seq:
+            # publisher restart / out-of-order: reset so we don't decode across discontinuity
+            self.gap_count += 1
+            self.get_logger().warn(f'Sequence reset/out-of-order: {self.last_seq} -> {msg.sequence_id}, reset')
+            self._reset_codec('sequence reset')
+        elif self.last_seq is not None and msg.sequence_id > self.last_seq + self.reset_gap_packets:
             self.gap_count += 1
             self.get_logger().warn(f'Large gap: {self.last_seq} -> {msg.sequence_id}, reset')
             self._reset_codec('large sequence gap')
@@ -116,6 +174,34 @@ class VideoDecoderNode(Node):
         self.last_seq = msg.sequence_id
 
         chunk = bytes(msg.data)  # 280B Annex-B
+
+        # After reset/gap, buffer bytes until we have SPS+PPS+IDR, then feed.
+        # This avoids "non-existing PPS" / green-screen storms when starting mid-stream.
+        if self._need_headers:
+            self._pending.extend(chunk)
+            if len(self._pending) > self.resync_buffer_max_bytes:
+                # Drop oldest bytes, try align to a start code.
+                drop = len(self._pending) - self.resync_buffer_max_bytes
+                buf = bytes(self._pending)
+                cut = drop
+                # search forward for next start code (best-effort)
+                for j in range(drop, min(len(buf) - 4, drop + 512)):
+                    if buf[j:j + 3] == _ST3 or buf[j:j + 4] == _ST4:
+                        cut = j
+                        break
+                del self._pending[:cut]
+
+            types = _nal_types_present(self._pending)
+            have_headers = (7 in types) and (8 in types)
+            have_idr = (5 in types)
+            if not (have_headers and have_idr):
+                return
+
+            # Feed buffered data once we see a clean restart point.
+            payload = bytes(self._pending)
+            self._pending.clear()
+            self._need_headers = False
+            chunk = payload
 
         try:
             packets = self.codec.parse(chunk)
