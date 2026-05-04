@@ -180,6 +180,42 @@ def pack_serial_frame(cmd_id: int, data: bytes, seq: int = 0) -> bytes:
     return bytes(frame)
 
 
+def _fmt_real_device(device: str) -> str:
+    try:
+        real = os.path.realpath(device)
+    except Exception:
+        real = device
+    if real == device:
+        return device
+    return f"{device} -> {real}"
+
+
+def _open_serial_with_retry(serial_module, device: str, baud: int, *, retry_sleep_s: float = 3.0):
+    while True:
+        try:
+            ser = serial_module.Serial(device, baud, timeout=1, write_timeout=1)
+            print(f"[serial] Opened {_fmt_real_device(device)} @ {baud} baud")
+            return ser
+        except Exception as e:
+            print(f"[serial] Cannot open {_fmt_real_device(device)}: {e}")
+            print(f"[serial] Retrying in {retry_sleep_s:.0f}s...")
+            time.sleep(retry_sleep_s)
+
+
+def _realpath_quiet(device: str) -> str:
+    try:
+        return os.path.realpath(device)
+    except Exception:
+        return device
+
+
+def _close_quietly(ser) -> None:
+    try:
+        ser.close()
+    except Exception:
+        pass
+
+
 def main() -> int:
     try:
         import serial
@@ -201,6 +237,11 @@ def main() -> int:
     ap.add_argument("--ros-topic", default="/video_stream")
     ap.add_argument("--print-stats", action="store_true")
     ap.add_argument("--cmd-id", type=int, default=0x0310, help="下位机命令ID")
+    ap.add_argument(
+        "--no-reconnect",
+        action="store_true",
+        help="Disable auto-reconnect when serial write fails (USB re-enumeration, unplug, etc)",
+    )
     ap.add_argument("--send-rate", type=int, default=40,
                     help="串口发送速率上限 (pkt/s)，不超过 MCU 处理能力")
     ap.add_argument(
@@ -217,19 +258,8 @@ def main() -> int:
     rclpy.init(args=sys.argv[1:])
 
     # ── 打开串口 ──
-    try:
-        ser = serial.Serial(args.device, args.baud, timeout=1, write_timeout=1)
-        print(f"[serial] Opened {args.device} @ {args.baud} baud")
-    except Exception as e:
-        print(f"[serial] Cannot open {args.device}: {e}")
-        print("[serial] Retrying every 3 seconds...")
-        while True:
-            try:
-                ser = serial.Serial(args.device, args.baud, timeout=1, write_timeout=1)
-                print(f"[serial] Opened {args.device}")
-                break
-            except Exception:
-                time.sleep(3)
+    ser = _open_serial_with_retry(serial, args.device, args.baud, retry_sleep_s=3.0)
+    ser_target = _realpath_quiet(args.device)
 
     # ── 共享状态 ──
     ros_rx = 0
@@ -271,7 +301,18 @@ def main() -> int:
             nonlocal ros_rx, serial_tx, drop_count, skip_count, seq_counter
             nonlocal last_send_time, pframe_skip, kf_sent, last_kf_time
             nonlocal sent_frame_counter, in_burst, grace_chunks
+            nonlocal ser, ser_target
             ros_rx += 1
+
+            if not args.no_reconnect:
+                current_target = _realpath_quiet(args.device)
+                if current_target != ser_target:
+                    print(
+                        f"[serial] Device target changed: {ser_target} -> {current_target}; reopening..."
+                    )
+                    _close_quietly(ser)
+                    ser = _open_serial_with_retry(serial, args.device, args.baud, retry_sleep_s=1.0)
+                    ser_target = current_target
 
             chunk = bytes(msg.data)  # exactly 280B Annex‑B H.264
 
@@ -339,10 +380,26 @@ def main() -> int:
                 if _ > 0:
                     time.sleep(0.001)  # 1ms 间隔，避免 MCU 串口 FIFO 溢出
                 try:
-                    ser.write(frame)
+                    n = ser.write(frame)
+                    if n != len(frame):
+                        raise RuntimeError(f"short write: {n}/{len(frame)}")
                     serial_tx += 1
                 except Exception:
                     drop_count += 1
+                    if args.no_reconnect:
+                        continue
+
+                    # 关键：udev symlink 变化不会影响已打开的 fd。
+                    # 写失败时关闭并重新按 args.device 打开（会跟随最新 symlink 指向）。
+                    _close_quietly(ser)
+                    ser = _open_serial_with_retry(serial, args.device, args.baud, retry_sleep_s=1.0)
+                    ser_target = _realpath_quiet(args.device)
+                    try:
+                        n = ser.write(frame)
+                        if n == len(frame):
+                            serial_tx += 1
+                    except Exception:
+                        drop_count += 1
 
             # ── Burst 内 chunk 间隔: 串口传输本身约 3ms, 额外延迟让 MCU 完成 MQTT publish ──
             if not args.no_keyframe_filter:
@@ -380,7 +437,7 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        ser.close()
+        _close_quietly(ser)
         node.destroy_node()
         rclpy.shutdown()
 

@@ -25,7 +25,7 @@ ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/rmnuc1/RM-customization/install/setup.bash && \
   exec python3 /home/rmnuc1/RM-customization/tools/serial_bridge.py \
-    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
+    --device /dev/stm32_uart --baud 921600 --robot-id 1 \
     --no-keyframe-filter \
     --send-rate 45 --redundancy 1 \
     --print-stats'

@@ -25,11 +25,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable rm-sniper-ros rm-sniper-serial
 ```
 
-### 修改串口号（如非 /dev/ttyACM0）
+### 修改串口设备（推荐使用 udev symlink）
 
 ```bash
 sudo systemctl edit rm-sniper-serial
-# 修改 ExecStart 行中的 --device /dev/ttyXXX
+# 修改 ExecStart 行中的 --device ...
+# 推荐：用 udev 规则创建固定设备名（例如 /dev/stm32_uart），避免 ttyACM0/ttyACM1 重枚举导致服务写入失效。
 ```
 
 ### 手动启动
