@@ -107,6 +107,52 @@ python3 tools/serial_bridge.py \
     --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
     --send-rate 40 --redundancy 1 --chunk-delay-ms 20 \
     --keyframe-interval 0.25 --print-stats
+
+#### 4.1.1 提高画质/帧率（发送端 CPU 有余量时）
+
+> 发送端 CPU 只有 ~20% 时，**瓶颈通常不在编码算力**，而在链路带宽与发送策略。
+>
+> 生产默认用 `serial_bridge.py` 的“关键帧过滤”模式：主要发送 **SPS/PPS + IDR(I 帧)**，大量 **P 帧会被丢弃**，因此帧率会被 `--keyframe-interval` 直接限制（常见 ~4fps）。
+
+**方案 A：保持带宽不变，显著提高 fps（推荐优先尝试）**
+
+- 关闭关键帧过滤，改为“全量发送”（SPS/PPS + I/P 全部发），让 H.264 的帧间预测真正生效：
+
+```bash
+python3 tools/serial_bridge.py \
+    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
+    --no-keyframe-filter \
+    --send-rate 45 --redundancy 1 \
+    --print-stats
+```
+
+说明：
+
+- `--send-rate` 单位是 **pkt/s**（每包约 307B），`45 pkt/s ≈ 13.8 kB/s`，刚好贴近 `sniper.launch.py` 默认的 `hard_max_bitrate_kbytes=14`。
+- 若观察到 `skipped` 增长（限速跳包），可把 `--send-rate` 小幅上调；若下位机/裁判系统处理不过来导致丢包，反向下调。
+
+**方案 B：用更多 CPU 换同码率更好画质（压缩效率提升）**
+
+- 在 [src/bringup/launch/sniper.launch.py](src/bringup/launch/sniper.launch.py) 里把 `x264_preset` 从 `fast` 调慢到 `medium/slow`（CPU 会上升，画质一般会更稳）：
+    - 画质优先：`slow`
+    - 均衡：`medium`
+
+同时建议把编码器的 `output_fps` 调到一个“链路能承载”的值（例如 10~20，当前 launch 默认 20）：
+
+- 当前编码器内部有 `bandwidth_limit_kbytes` 限速窗口；当 `output_fps` 过高但带宽固定时，编码器会把更多帧编码出来，但最终会被限速窗口挡住并在队列超时后丢弃（既浪费 CPU，也会引入画面不稳定）。
+- 将 `output_fps` 设为可承载范围后，再用更慢的 `x264_preset` 去换压缩效率，收益更直接。
+
+**方案 C：在带宽允许时，同时拉高帧率与清晰度**
+
+- 先用方案 A 解除“只发关键帧”的限制；
+- 再按链路余量小幅上调编码码率：把 [src/bringup/launch/sniper.launch.py](src/bringup/launch/sniper.launch.py) 里的 `target_bitrate_kbytes` 从 `10.0` 提到 `12.0~14.0`；
+- 同时确保编码器侧 `bandwidth_limit_kbytes` 与发送端 `--send-rate` 不成为瓶颈（目标是让编码器日志里的 `TX stats avg` 接近但不超过上限）。
+
+**经验法则**
+
+- 想“更清晰”但带宽不变：优先调慢 `x264_preset`（fast→medium/slow）。
+- 想“更流畅”：优先关闭关键帧过滤（`--no-keyframe-filter`），比盲目加码率更有效。
+- 想“两者都上去”：只能在链路允许的前提下提高 `target_bitrate_kbytes / send-rate`。
 ```
 
 **串口帧格式 (cmd=0x0310，机器人自定义数据上传):**

@@ -27,8 +27,11 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   param_input_topic_ = this->declare_parameter("input_topic", "/image_raw");
   param_crop_size_ = this->declare_parameter("crop_size", 800);
   param_output_size_ = this->declare_parameter("output_size", 400);
-  param_output_fps_ = this->declare_parameter("output_fps", 60);
+  param_output_fps_ = this->declare_parameter("output_fps", 20);
   param_target_bitrate_ = this->declare_parameter("target_bitrate", 40);
+  param_low_bitrate_threshold_kbps_ = this->declare_parameter("low_bitrate_threshold_kbps", 80);
+  param_force_low_bitrate_mode_ = this->declare_parameter("force_low_bitrate_mode", false);
+  param_gop_seconds_ = this->declare_parameter("gop_seconds", 0.5);
   param_packet_size_ = this->declare_parameter("packet_size", kVideoPacketBytes);
   param_static_simplify_ = this->declare_parameter("static_simplify", true);
   param_motion_threshold_ = this->declare_parameter("motion_threshold", 14);
@@ -68,6 +71,18 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
       "VideoPacket.msg payload is fixed to %d bytes, override packet_size %d -> %d",
       kVideoPacketBytes, param_packet_size_, kVideoPacketBytes);
     param_packet_size_ = kVideoPacketBytes;
+  }
+
+  if (param_low_bitrate_threshold_kbps_ < 1) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "low_bitrate_threshold_kbps=%d invalid, clamp to 1",
+      param_low_bitrate_threshold_kbps_);
+    param_low_bitrate_threshold_kbps_ = 1;
+  }
+  if (param_gop_seconds_ <= 0.0) {
+    RCLCPP_WARN(this->get_logger(), "gop_seconds=%.3f invalid, clamp to 0.5", param_gop_seconds_);
+    param_gop_seconds_ = 0.5;
   }
 
   if (param_target_bitrate_ < 200) {
@@ -254,13 +269,14 @@ void VideoEncoderNode::initialize_gstreamer()
     nullptr);
   gst_caps_unref(caps);
 
-  const bool low_bitrate_mode = (param_target_bitrate_ <= 80);
+  const bool low_bitrate_mode =
+    param_force_low_bitrate_mode_ || (param_target_bitrate_ <= param_low_bitrate_threshold_kbps_);
   // Robust GOP for lossy transports (serial→MCU→MQTT):
   //   key-int~0.5s   short GOP — quick recovery, IDR not too frequent
   //   bframes=0      no B-frames
   //   ref=1          single reference
   //   ultrafast      lowest latency, smallest frame-size spikes
-  const int key_int = std::max(param_output_fps_ / 2, 15);
+  const int key_int = std::max(static_cast<int>(param_output_fps_ * param_gop_seconds_), 15);
   const int default_speed_preset = 1;  // ultrafast — minimize frame-size spikes
   int speed_preset = default_speed_preset;
   std::string preset_lower = param_x264_preset_;
@@ -295,7 +311,7 @@ void VideoEncoderNode::initialize_gstreamer()
       "speed-preset", speed_preset,
       "tune", 0x00000004,         // zerolatency — minimal delay, no frame reordering
       "byte-stream", TRUE,
-      "key-int-max", key_int,     // IDR every frame — independent decoding
+      "key-int-max", key_int,     // short GOP — quick recovery under loss
       "bframes", 0,               // NO B-frames — eliminates "mmco" / "co‑located POCs"
       "rc-lookahead", 0,
       "sync-lookahead", 0,
@@ -322,12 +338,14 @@ void VideoEncoderNode::initialize_gstreamer()
       "speed-preset", speed_preset,
       "tune", 0x00000004,         // zerolatency
       "byte-stream", TRUE,
-      "key-int-max", 2 * param_output_fps_,
+      "key-int-max", key_int,     // keep short GOP for lossy transport
       "bframes", 0,
       "rc-lookahead", 0,
       "sync-lookahead", 0,
       "sliced-threads", TRUE,
+      "ref", 1,
       "aud", TRUE,
+      "vbv-buf-capacity", 500,
       "option-string", "repeat-headers=1:scenecut=0:ref=1:force-cfr=1",
       "pass", 0,
       nullptr);

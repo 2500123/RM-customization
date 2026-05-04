@@ -84,6 +84,9 @@ private:
   int param_output_size_ = 400;
   int param_output_fps_ = 60;
   int param_target_bitrate_ = 40;
+  int param_low_bitrate_threshold_kbps_ = 80;
+  bool param_force_low_bitrate_mode_ = false;
+  double param_gop_seconds_ = 0.5;
   int param_packet_size_ = 280;
   bool param_static_simplify_ = true;
   int param_motion_threshold_ = 14;

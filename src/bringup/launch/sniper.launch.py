@@ -22,10 +22,11 @@ def generate_launch_description():
     dump_save_decoder = True          # 保存解码端窗口
 
     # 码率策略（单位：kB/s）
-    target_bitrate_kbytes = 10.0       # 目标编码码率 — 不动，带宽窗口只有 14 kB/s
+    # 目标码率建议略低于硬上限：留出关键帧/VBV 波动余量，减少丢数据导致的绿屏
+    target_bitrate_kbytes = 12.0
     hard_max_bitrate_kbytes = 14.0     # 传输硬上限（由发送窗口限速实现）
     target_bitrate_kbps = int(target_bitrate_kbytes * 8.0)  # x264 参数单位是 kbps
-    x264_preset = 'fast'               # x264 速度预设：编码器自动选择，fast 平衡延迟/压缩
+    x264_preset = 'medium'             # CPU 有余量时：medium/slow 更稳、更清晰（同码率）
     encode_size = 300
 
     # 编码端容器（相机 + 编码器，同进程零拷贝）
@@ -53,7 +54,10 @@ def generate_launch_description():
                     {'input_topic': '/image_raw'},                       # 输入图像话题
                     {'target_bitrate': target_bitrate_kbps},             # 目标编码码率(kbps)，5kB/s -> 40kbps
                     {'x264_preset': x264_preset},                        # x264 preset: auto/ultrafast/.../veryslow
-                    {'output_fps': 60},                                  # 输出帧率
+                    {'output_fps': 20},                                  # 输出帧率
+                    {'gop_seconds': 0.5},                                 # GOP 时长(s). 短 GOP 更抗丢包/限速丢数据
+                    {'low_bitrate_threshold_kbps': 200},                  # 提码率仍走“稳态”参数，避免切模式导致花屏
+                    {'force_low_bitrate_mode': False},                    # 强制低码率参数(调试用)
                     # packet_size 固定为 280B (VideoPacket.msg payload 大小)，C++ 强制覆盖
                     {'enable_display': False},                           # 编码端调试显示 (用 PyQt viewer 替代)
                     {'debug_dump_enable': debug_dump_enable},            # 开启后每N帧保存编码端窗口画面
