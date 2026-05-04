@@ -245,6 +245,75 @@ def main() -> int:
 
     qsize_expanding = QtWidgets.QSizePolicy.Expanding if hasattr(QtWidgets.QSizePolicy, "Expanding") else QtWidgets.QSizePolicy.Policy.Expanding
 
+    class _ImageView(QtWidgets.QWidget):
+        def __init__(self):
+            super().__init__()
+            self._qimg = None
+            self._text = "(waiting for frames...)"
+            self._last_out_wh = (0, 0)
+            self.setMinimumSize(1, 1)
+            self.setSizePolicy(qsize_expanding, qsize_expanding)
+
+        def set_text(self, text: str) -> None:
+            self._text = str(text)
+            self._qimg = None
+            self._last_out_wh = (0, 0)
+            self.update()
+
+        def set_image(self, qimg) -> None:
+            self._qimg = qimg
+            self._text = ""
+            self.update()
+
+        def last_out_wh(self) -> Tuple[int, int]:
+            return self._last_out_wh
+
+        def paintEvent(self, event):  # type: ignore
+            painter = QtGui.QPainter(self)
+            try:
+                painter.fillRect(self.rect(), self.palette().brush(QtGui.QPalette.Window))
+            except Exception:
+                pass
+
+            if self._qimg is None or self._qimg.isNull():
+                painter.setPen(self.palette().color(QtGui.QPalette.Text))
+                painter.drawText(self.rect(), align_center, self._text)
+                return
+
+            src_w = int(self._qimg.width())
+            src_h = int(self._qimg.height())
+            view_w = max(1, int(self.width()))
+            view_h = max(1, int(self.height()))
+
+            scale = min(view_w / max(src_w, 1), view_h / max(src_h, 1))
+            out_w = max(1, int(round(src_w * scale)))
+            out_h = max(1, int(round(src_h * scale)))
+            self._last_out_wh = (out_w, out_h)
+
+            x = (view_w - out_w) // 2
+            y = (view_h - out_h) // 2
+            target = QtCore.QRect(int(x), int(y), int(out_w), int(out_h))
+
+            try:
+                painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+            except Exception:
+                try:
+                    painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+                except Exception:
+                    pass
+            painter.drawImage(target, self._qimg)
+
+            # Crosshair (center of the displayed image area)
+            pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 1)
+            painter.setPen(pen)
+            cx, cy = x + out_w // 2, y + out_h // 2
+            gap = 0
+            length = 70
+            painter.drawLine(cx, cy - gap, cx, cy - length)
+            painter.drawLine(cx, cy + gap, cx, cy + length)
+            painter.drawLine(cx - gap, cy, cx - length, cy)
+            painter.drawLine(cx + gap, cy, cx + length, cy)
+
     client_id = "1"
 
     app = QtWidgets.QApplication(sys.argv)
@@ -252,16 +321,7 @@ def main() -> int:
     window.setWindowTitle(f"{args.window} [Robot {args.robot_id}] [{binding}]")
 
     btn_refresh = QtWidgets.QPushButton("刷新")
-    image_label = QtWidgets.QLabel("(waiting for frames...)")
-    image_label.setAlignment(align_center)
-    image_label.setMinimumSize(1, 1)
-    image_label.setSizePolicy(qsize_expanding, qsize_expanding)
-
-    scroll_area = QtWidgets.QScrollArea()
-    scroll_area.setWidget(image_label)
-    scroll_area.setWidgetResizable(False)
-    if hasattr(scroll_area, "setAlignment"):
-        scroll_area.setAlignment(align_center)
+    image_view = _ImageView()
 
     status_label = QtWidgets.QLabel("")
     status_label.setTextInteractionFlags(text_selectable)
@@ -272,7 +332,7 @@ def main() -> int:
 
     layout = QtWidgets.QVBoxLayout(window)
     layout.addLayout(top_row, 0)
-    layout.addWidget(scroll_area, 1)
+    layout.addWidget(image_view, 1)
     layout.addWidget(status_label, 0)
 
     window.resize(960, 720)
@@ -289,12 +349,10 @@ def main() -> int:
     last_status_ts = 0.0
     last_img: Optional[object] = None
     last_frame_bgr = None
-    zoom = 1.0
-    zoom_step = 1.25
-    zoom_min = 0.25
-    zoom_max = 8.0
     last_data_len = 0
     last_data_head = b""
+    last_src_wh: Tuple[int, int] = (0, 0)
+    last_out_wh: Tuple[int, int] = (0, 0)
     # ── 丢包 / 延迟诊断 ──
     last_frame_id: Optional[int] = None
     gap_count = 0
@@ -326,71 +384,16 @@ def main() -> int:
         out_h = max(1, int(round(src_h * scale)))
         return out_w, out_h
 
-    def _clamp(v: float, lo: float, hi: float) -> float:
-        return max(lo, min(hi, v))
-
-    def set_zoom(new_zoom: float) -> None:
-        nonlocal zoom
-        zoom = _clamp(float(new_zoom), zoom_min, zoom_max)
-        redraw()
-        update_status(force=True)
-
     def redraw() -> None:
-        nonlocal last_img, last_frame_bgr, zoom
+        """Refresh the displayed image.
 
-        # Prefer scaling from the original decoded frame when available.
-        if last_frame_bgr is not None:
-            try:
-                vp_sz = scroll_area.viewport().size()
-                dst_w, dst_h = int(vp_sz.width()), int(vp_sz.height())
-                src_h, src_w = last_frame_bgr.shape[:2]
-                out_w, out_h = _fit_size(src_w, src_h, dst_w, dst_h)
-                if out_w <= 0 or out_h <= 0:
-                    return
-
-                # Apply manual zoom after "fit-to-window".
-                out_w = max(1, int(round(out_w * zoom)))
-                out_h = max(1, int(round(out_h * zoom)))
-
-                if cv2 is not None and (out_w != src_w or out_h != src_h):
-                    # Better subjective sharpness when upscaling; better aliasing control when downscaling.
-                    interp = cv2.INTER_LANCZOS4 if (out_w > src_w or out_h > src_h) else cv2.INTER_AREA
-                    scaled = cv2.resize(last_frame_bgr, (out_w, out_h), interpolation=interp)
-                else:
-                    scaled = last_frame_bgr
-
-                last_img = _qimage_from_bgr(scaled)
-            except Exception:
-                # Fall back to whatever last_img is (if any)
-                pass
-
+        Resizing is handled by the widget's paintEvent, so this only needs to
+        push the latest frame into the view.
+        """
+        nonlocal last_img
         if last_img is None or last_img.isNull():
             return
-
-        # Draw on the *already scaled* pixmap so overlay stays crisp.
-        pix = QtGui.QPixmap.fromImage(last_img)
-        painter = QtGui.QPainter(pix)
-        try:
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        except Exception:
-            pass
-        pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 1)
-        painter.setPen(pen)
-        cx, cy = pix.width() // 2, pix.height() // 2
-        gap = 0
-        length = 70
-        painter.drawLine(cx, cy - gap, cx, cy - length)
-        painter.drawLine(cx, cy + gap, cx, cy + length)
-        painter.drawLine(cx - gap, cy, cx - length, cy)
-        painter.drawLine(cx + gap, cy, cx + length, cy)
-        painter.end()
-
-        # Center the pixmap in the label without extra Qt scaling (we already scaled above).
-        image_label.setPixmap(pix)
-        try:
-            image_label.setFixedSize(pix.size())
-        except Exception:
-            pass
+        image_view.set_image(last_img)
 
     def update_status(force: bool = False) -> None:
         nonlocal last_status_ts
@@ -400,11 +403,20 @@ def main() -> int:
         last_status_ts = now
         if args.mode == "h264_stream":
             loss_pct = f"{(lost_pkts / max(rx_msgs, 1) * 100):.1f}%" if rx_msgs > 0 else "0%"
+            try:
+                sz = image_view.size()
+                view_wh = (int(sz.width()), int(sz.height()))
+            except Exception:
+                view_wh = (-1, -1)
+            try:
+                last_out_wh = image_view.last_out_wh()
+            except Exception:
+                last_out_wh = (0, 0)
             status_label.setText(
                 f"MQTT {args.host}:{args.port} topic={args.topic} | "
                 f"rx={rx_msgs} bad={bad_msgs} lost={lost_pkts}({loss_pct}) gaps={gap_count} "
                 f"frames={h264_frames} errs={h264_parse_errors} stall={h264_stall_resets} | "
-                f"zoom={zoom:.2f}x | "
+                f"src={last_src_wh[0]}x{last_src_wh[1]} view={view_wh[0]}x{view_wh[1]} out={last_out_wh[0]}x{last_out_wh[1]} | "
                 f"data={last_data_len}B"
             )
         elif args.mode == "hevc_udp":
@@ -456,57 +468,12 @@ def main() -> int:
                 _hevc_codec.flush_buffers()
             except Exception:
                 pass
-        image_label.clear()
-        image_label.setText("(waiting for frames...)")
+        image_view.set_text("(waiting for frames...)")
         update_status(force=True)
 
     btn_refresh.clicked.connect(reset_view)
 
-    # ── Ctrl + Wheel zoom + auto-rescale on resize ──
-    if hasattr(QtCore.Qt, "KeyboardModifier"):
-        ctrl_modifier = QtCore.Qt.KeyboardModifier.ControlModifier
-    else:
-        ctrl_modifier = QtCore.Qt.ControlModifier
-
-    wheel_event_type = QtCore.QEvent.Type.Wheel if hasattr(QtCore.QEvent, "Type") else QtCore.QEvent.Wheel
-    resize_event_type = QtCore.QEvent.Type.Resize if hasattr(QtCore.QEvent, "Type") else QtCore.QEvent.Resize
-
-    class _ZoomFilter(QtCore.QObject):
-        def eventFilter(self, obj, event):  # type: ignore
-            nonlocal zoom
-            try:
-                et = event.type()
-            except Exception:
-                return False
-
-            if et == wheel_event_type:
-                try:
-                    mods = event.modifiers()
-                except Exception:
-                    mods = None
-                if mods is not None and (mods & ctrl_modifier):
-                    try:
-                        dy = event.angleDelta().y()
-                    except Exception:
-                        try:
-                            dy = event.delta()
-                        except Exception:
-                            dy = 0
-                    if dy > 0:
-                        set_zoom(zoom * zoom_step)
-                    elif dy < 0:
-                        set_zoom(zoom / zoom_step)
-                    return True
-
-            if et == resize_event_type:
-                # Re-fit / re-scale when the window/viewport size changes.
-                redraw()
-                return False
-
-            return False
-
-    _zf = _ZoomFilter(scroll_area)
-    scroll_area.viewport().installEventFilter(_zf)
+    # Resizing is handled by the custom paintEvent in _ImageView.
 
     def on_connect(client, userdata, flags, rc):
         client.subscribe(args.topic)
@@ -589,6 +556,7 @@ def main() -> int:
                                         continue
                                     hevc_frames += 1
                                     last_frame_bgr = arr.copy()
+                                    last_src_wh = (int(frame.width), int(frame.height))
                                     last_img = _qimage_from_bgr(last_frame_bgr)
                                     redraw()
                         except av.AVError:
@@ -670,6 +638,7 @@ def main() -> int:
                                 h264_frames += 1
                                 h264_last_frame_time = time.monotonic()
                                 last_frame_bgr = arr.copy()
+                                last_src_wh = (int(frame.width), int(frame.height))
                                 last_img = _qimage_from_bgr(last_frame_bgr)
                                 redraw()
                     except av.AVError:
