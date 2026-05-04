@@ -254,8 +254,14 @@ def main() -> int:
     btn_refresh = QtWidgets.QPushButton("刷新")
     image_label = QtWidgets.QLabel("(waiting for frames...)")
     image_label.setAlignment(align_center)
-    image_label.setMinimumSize(960, 720)
+    image_label.setMinimumSize(1, 1)
     image_label.setSizePolicy(qsize_expanding, qsize_expanding)
+
+    scroll_area = QtWidgets.QScrollArea()
+    scroll_area.setWidget(image_label)
+    scroll_area.setWidgetResizable(False)
+    if hasattr(scroll_area, "setAlignment"):
+        scroll_area.setAlignment(align_center)
 
     status_label = QtWidgets.QLabel("")
     status_label.setTextInteractionFlags(text_selectable)
@@ -266,7 +272,7 @@ def main() -> int:
 
     layout = QtWidgets.QVBoxLayout(window)
     layout.addLayout(top_row, 0)
-    layout.addWidget(image_label, 1)
+    layout.addWidget(scroll_area, 1)
     layout.addWidget(status_label, 0)
 
     window.resize(960, 720)
@@ -283,6 +289,10 @@ def main() -> int:
     last_status_ts = 0.0
     last_img: Optional[object] = None
     last_frame_bgr = None
+    zoom = 1.0
+    zoom_step = 1.25
+    zoom_min = 0.25
+    zoom_max = 8.0
     last_data_len = 0
     last_data_head = b""
     # ── 丢包 / 延迟诊断 ──
@@ -316,18 +326,31 @@ def main() -> int:
         out_h = max(1, int(round(src_h * scale)))
         return out_w, out_h
 
+    def _clamp(v: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, v))
+
+    def set_zoom(new_zoom: float) -> None:
+        nonlocal zoom
+        zoom = _clamp(float(new_zoom), zoom_min, zoom_max)
+        redraw()
+        update_status(force=True)
+
     def redraw() -> None:
-        nonlocal last_img, last_frame_bgr
+        nonlocal last_img, last_frame_bgr, zoom
 
         # Prefer scaling from the original decoded frame when available.
         if last_frame_bgr is not None:
             try:
-                label_sz = image_label.size()
-                dst_w, dst_h = int(label_sz.width()), int(label_sz.height())
+                vp_sz = scroll_area.viewport().size()
+                dst_w, dst_h = int(vp_sz.width()), int(vp_sz.height())
                 src_h, src_w = last_frame_bgr.shape[:2]
                 out_w, out_h = _fit_size(src_w, src_h, dst_w, dst_h)
                 if out_w <= 0 or out_h <= 0:
                     return
+
+                # Apply manual zoom after "fit-to-window".
+                out_w = max(1, int(round(out_w * zoom)))
+                out_h = max(1, int(round(out_h * zoom)))
 
                 if cv2 is not None and (out_w != src_w or out_h != src_h):
                     # Better subjective sharpness when upscaling; better aliasing control when downscaling.
@@ -364,6 +387,10 @@ def main() -> int:
 
         # Center the pixmap in the label without extra Qt scaling (we already scaled above).
         image_label.setPixmap(pix)
+        try:
+            image_label.setFixedSize(pix.size())
+        except Exception:
+            pass
 
     def update_status(force: bool = False) -> None:
         nonlocal last_status_ts
@@ -377,6 +404,7 @@ def main() -> int:
                 f"MQTT {args.host}:{args.port} topic={args.topic} | "
                 f"rx={rx_msgs} bad={bad_msgs} lost={lost_pkts}({loss_pct}) gaps={gap_count} "
                 f"frames={h264_frames} errs={h264_parse_errors} stall={h264_stall_resets} | "
+                f"zoom={zoom:.2f}x | "
                 f"data={last_data_len}B"
             )
         elif args.mode == "hevc_udp":
@@ -433,6 +461,52 @@ def main() -> int:
         update_status(force=True)
 
     btn_refresh.clicked.connect(reset_view)
+
+    # ── Ctrl + Wheel zoom + auto-rescale on resize ──
+    if hasattr(QtCore.Qt, "KeyboardModifier"):
+        ctrl_modifier = QtCore.Qt.KeyboardModifier.ControlModifier
+    else:
+        ctrl_modifier = QtCore.Qt.ControlModifier
+
+    wheel_event_type = QtCore.QEvent.Type.Wheel if hasattr(QtCore.QEvent, "Type") else QtCore.QEvent.Wheel
+    resize_event_type = QtCore.QEvent.Type.Resize if hasattr(QtCore.QEvent, "Type") else QtCore.QEvent.Resize
+
+    class _ZoomFilter(QtCore.QObject):
+        def eventFilter(self, obj, event):  # type: ignore
+            nonlocal zoom
+            try:
+                et = event.type()
+            except Exception:
+                return False
+
+            if et == wheel_event_type:
+                try:
+                    mods = event.modifiers()
+                except Exception:
+                    mods = None
+                if mods is not None and (mods & ctrl_modifier):
+                    try:
+                        dy = event.angleDelta().y()
+                    except Exception:
+                        try:
+                            dy = event.delta()
+                        except Exception:
+                            dy = 0
+                    if dy > 0:
+                        set_zoom(zoom * zoom_step)
+                    elif dy < 0:
+                        set_zoom(zoom / zoom_step)
+                    return True
+
+            if et == resize_event_type:
+                # Re-fit / re-scale when the window/viewport size changes.
+                redraw()
+                return False
+
+            return False
+
+    _zf = _ZoomFilter(scroll_area)
+    scroll_area.viewport().installEventFilter(_zf)
 
     def on_connect(client, userdata, flags, rc):
         client.subscribe(args.topic)

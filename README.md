@@ -108,15 +108,8 @@ python3 tools/serial_bridge.py \
     --send-rate 40 --redundancy 1 --chunk-delay-ms 20 \
     --keyframe-interval 0.25 --print-stats
 
-> 如果你安装过 `deploy/` 里的 systemd 自启服务（`rm-sniper-ros`/`rm-sniper-serial`），手动在终端再启动一套管线会造成“多实例抢带宽/参数不生效”。
-> 需要手动调参时，先执行：
-> 
-> - `sudo systemctl stop rm-sniper-serial rm-sniper-ros`
-> - 或 `sudo systemctl disable rm-sniper-ros rm-sniper-serial`
-
 #### 4.1.1 提高画质/帧率（发送端 CPU 有余量时）
 
-> 发送端 CPU 只有 ~20% 时，**瓶颈通常不在编码算力**，而在链路带宽与发送策略。
 >
 > 生产默认用 `serial_bridge.py` 的“关键帧过滤”模式：主要发送 **SPS/PPS + IDR(I 帧)**，大量 **P 帧会被丢弃**，因此帧率会被 `--keyframe-interval` 直接限制（常见 ~4fps）。
 
@@ -131,6 +124,12 @@ python3 tools/serial_bridge.py \
     --send-rate 45 --redundancy 1 \
     --print-stats
 ```
+python3 tools/serial_bridge.py \
+    --device /dev/ttyCH341USB0 \
+    --baud 921600 --robot-id 1 \
+    --no-keyframe-filter \
+    --send-rate 45 --redundancy 1 \
+    --print-stats
 
 说明：
 

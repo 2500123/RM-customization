@@ -9,7 +9,9 @@
     cmd_id: 2B LE (0x0310)
     data: 288B 片段 (8B 片段头 + 280B H.264 chunk) + 12B 补零 = 300B
 
-  整帧长度 = frame_header 5B + cmd_id 2B + data 300B = 307 字节
+        CRC16: 2B LE (对整帧 SOF~data 的校验)
+
+    整帧长度 = frame_header 5B + cmd_id 2B + data 300B + CRC16 2B = 309 字节
 
 使用:
   python3 tools/serial_bridge.py  --baud 921600 --robot-id 1
@@ -122,7 +124,7 @@ def pack_serial_frame(cmd_id: int, data: bytes, seq: int = 0) -> bytes:
 
     格式:
         SOF:       1B  (0xA5)
-        data_length:2B  (小端, cmd_id(2B) + data 的长度)
+        data_length:2B  (小端, data 的长度；不包含 cmd_id)
         seq:        1B  (包序号)
         CRC8:       1B  (对前4字节的校验)
         cmd_id:     2B  (小端)
@@ -131,7 +133,7 @@ def pack_serial_frame(cmd_id: int, data: bytes, seq: int = 0) -> bytes:
     """
     frame = bytearray()
     frame.append(0xA5)                                 # SOF
-    frame.extend(struct.pack("<H", len(data) + 2))      # data_length (cmd_id + data)
+    frame.extend(struct.pack("<H", len(data)))          # data_length (data only)
     frame.append(seq & 0xFF)                            # seq
     # 计算前4字节的 CRC8 (SOF + data_length + seq)
     crc_val = crc8(frame[:4])                           # 前4字节
@@ -289,7 +291,7 @@ def main() -> int:
                 frame_id=frame_id, frag_idx=0, frag_cnt=1,
                 codec=CODEC_H264, flags=0, total_len=280, chunk=chunk,
             )
-            # 补零到 300B，使 data_length=300，MCU 直转无需再补
+            # 补零到 300B（data_length=300），MCU 直转无需再补
             if len(frag) < 300:
                 frag = frag + b'\x00' * (300 - len(frag))
 
