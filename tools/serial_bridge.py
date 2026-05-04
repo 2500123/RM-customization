@@ -12,7 +12,7 @@
   整帧长度 = frame_header 5B + cmd_id 2B + data 300B = 307 字节
 
 使用:
-  python3 tools/serial_bridge.py --device /dev/ttyACM0 --baud 921600 --robot-id 1
+  python3 tools/serial_bridge.py  --baud 921600 --robot-id 1
 """
 
 from __future__ import annotations
@@ -104,26 +104,42 @@ def crc8(data: bytes, init: int = 0xFF) -> int:
         crc = CRC8_TAB[crc ^ byte]
     return crc
 
+
+def crc16(data: bytes, init: int = 0xFFFF) -> int:
+    """计算 CRC16-CCITT (poly=0x1021, init=0xFFFF), RoboMaster 官方协议常用。"""
+    crc = init
+    for byte in data:
+        crc ^= (byte & 0xFF) << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
 def pack_serial_frame(cmd_id: int, data: bytes, seq: int = 0) -> bytes:
     """完全遵循官方协议封装串口帧
 
     格式:
         SOF:       1B  (0xA5)
-        data_length:2B  (小端, data 的长度)
+        data_length:2B  (小端, cmd_id(2B) + data 的长度)
         seq:        1B  (包序号)
         CRC8:       1B  (对前4字节的校验)
         cmd_id:     2B  (小端)
         data:       N B
+        CRC16:      2B  (小端, 对整帧 SOF~data 的校验)
     """
     frame = bytearray()
     frame.append(0xA5)                                 # SOF
-    frame.extend(struct.pack("<H", len(data)))          # data_length (小端)
+    frame.extend(struct.pack("<H", len(data) + 2))      # data_length (cmd_id + data)
     frame.append(seq & 0xFF)                            # seq
     # 计算前4字节的 CRC8 (SOF + data_length + seq)
     crc_val = crc8(frame[:4])                           # 前4字节
     frame.append(crc_val)                               # CRC8
     frame.extend(struct.pack("<H", cmd_id))             # cmd_id (小端)
     frame.extend(data)                                  # data
+    # CRC16 覆盖从 SOF 到 data 末尾 (不含 CRC16 本身)
+    frame.extend(struct.pack("<H", crc16(frame)))
     return bytes(frame)
 
 

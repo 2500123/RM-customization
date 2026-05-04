@@ -30,6 +30,12 @@ import threading
 import time
 from typing import Optional, Tuple
 
+# Optional: use OpenCV for higher-quality scaling (better than Qt's default in many cases)
+try:
+    import cv2  # type: ignore
+except Exception:
+    cv2 = None
+
 # ── 优先使用 protobuf 库 ──────────────────────────────────────────────
 try:
     sys.path.insert(0, os.path.dirname(__file__))
@@ -248,7 +254,7 @@ def main() -> int:
     btn_refresh = QtWidgets.QPushButton("刷新")
     image_label = QtWidgets.QLabel("(waiting for frames...)")
     image_label.setAlignment(align_center)
-    image_label.setMinimumSize(640, 480)
+    image_label.setMinimumSize(960, 720)
     image_label.setSizePolicy(qsize_expanding, qsize_expanding)
 
     status_label = QtWidgets.QLabel("")
@@ -276,6 +282,7 @@ def main() -> int:
     hevc_parse_errors = 0
     last_status_ts = 0.0
     last_img: Optional[object] = None
+    last_frame_bgr = None
     last_data_len = 0
     last_data_head = b""
     # ── 丢包 / 延迟诊断 ──
@@ -285,29 +292,78 @@ def main() -> int:
 
     payload_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=2000)
 
+    def _qimage_from_bgr(arr) -> object:
+        h, w, ch = arr.shape
+        if ch != 3:
+            raise ValueError(f"expected 3 channels, got {ch}")
+        fmt_bgr = getattr(QtGui.QImage.Format, "Format_BGR888", None)
+        if fmt_bgr is not None:
+            qimg = QtGui.QImage(arr.data, w, h, w * ch, fmt_bgr)
+            return qimg.copy()
+        # Fallback for older Qt bindings: convert to RGB
+        rgb = arr[:, :, ::-1].copy()
+        fmt_rgb = getattr(QtGui.QImage.Format, "Format_RGB888", None)
+        if fmt_rgb is None:
+            raise ValueError("Qt binding missing Format_RGB888")
+        qimg = QtGui.QImage(rgb.data, w, h, w * 3, fmt_rgb)
+        return qimg.copy()
+
+    def _fit_size(src_w: int, src_h: int, dst_w: int, dst_h: int) -> Tuple[int, int]:
+        if src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0:
+            return 0, 0
+        scale = min(dst_w / src_w, dst_h / src_h)
+        out_w = max(1, int(round(src_w * scale)))
+        out_h = max(1, int(round(src_h * scale)))
+        return out_w, out_h
+
     def redraw() -> None:
-        nonlocal last_img
+        nonlocal last_img, last_frame_bgr
+
+        # Prefer scaling from the original decoded frame when available.
+        if last_frame_bgr is not None:
+            try:
+                label_sz = image_label.size()
+                dst_w, dst_h = int(label_sz.width()), int(label_sz.height())
+                src_h, src_w = last_frame_bgr.shape[:2]
+                out_w, out_h = _fit_size(src_w, src_h, dst_w, dst_h)
+                if out_w <= 0 or out_h <= 0:
+                    return
+
+                if cv2 is not None and (out_w != src_w or out_h != src_h):
+                    # Better subjective sharpness when upscaling; better aliasing control when downscaling.
+                    interp = cv2.INTER_LANCZOS4 if (out_w > src_w or out_h > src_h) else cv2.INTER_AREA
+                    scaled = cv2.resize(last_frame_bgr, (out_w, out_h), interpolation=interp)
+                else:
+                    scaled = last_frame_bgr
+
+                last_img = _qimage_from_bgr(scaled)
+            except Exception:
+                # Fall back to whatever last_img is (if any)
+                pass
+
         if last_img is None or last_img.isNull():
             return
+
+        # Draw on the *already scaled* pixmap so overlay stays crisp.
         pix = QtGui.QPixmap.fromImage(last_img)
-        # 绘制十字准心
         painter = QtGui.QPainter(pix)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        except Exception:
+            pass
         pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 1)
         painter.setPen(pen)
         cx, cy = pix.width() // 2, pix.height() // 2
-        gap = 0    # 准心缺口半径
-        length = 70  # 准心线长
-        # 上
+        gap = 0
+        length = 70
         painter.drawLine(cx, cy - gap, cx, cy - length)
-        # 下
         painter.drawLine(cx, cy + gap, cx, cy + length)
-        # 左
         painter.drawLine(cx - gap, cy, cx - length, cy)
-        # 右
         painter.drawLine(cx + gap, cy, cx + length, cy)
         painter.end()
-        image_label.setPixmap(pix.scaled(image_label.size(), keep_aspect, smooth_tx))
+
+        # Center the pixmap in the label without extra Qt scaling (we already scaled above).
+        image_label.setPixmap(pix)
 
     def update_status(force: bool = False) -> None:
         nonlocal last_status_ts
@@ -340,7 +396,7 @@ def main() -> int:
         nonlocal rx_msgs, bad_msgs, h264_frames, h264_parse_errors
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
-        nonlocal last_img, last_data_len, last_data_head
+        nonlocal last_img, last_frame_bgr, last_data_len, last_data_head
         nonlocal last_frame_id, gap_count, lost_pkts
         rx_msgs = bad_msgs = 0
         h264_frames = 0
@@ -351,6 +407,7 @@ def main() -> int:
         hevc_packets = 0
         hevc_parse_errors = 0
         last_img = None
+        last_frame_bgr = None
         last_data_len = 0
         last_data_head = b""
         last_frame_id = None
@@ -457,9 +514,8 @@ def main() -> int:
                                     if arr is None or arr.size == 0:
                                         continue
                                     hevc_frames += 1
-                                    h, w, ch = arr.shape
-                                    qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
-                                    last_img = qimg.copy()
+                                    last_frame_bgr = arr.copy()
+                                    last_img = _qimage_from_bgr(last_frame_bgr)
                                     redraw()
                         except av.AVError:
                             hevc_parse_errors += 1
@@ -518,17 +574,6 @@ def main() -> int:
                         if _h264_codec is None:
                             continue
 
-                    if _h264_codec is None or _has_sps_pps(chunk):
-                        try:
-                            import av as _av
-                            _h264_codec = _av.CodecContext.create("h264", "r")
-                            _h264_codec.thread_type = "FRAME"
-                            _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
-                        except Exception:
-                            _h264_codec = None
-                        if _h264_codec is None:
-                            continue
-
                     # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
                     try:
                         packets = _h264_codec.parse(chunk)
@@ -550,9 +595,8 @@ def main() -> int:
                                     continue
                                 h264_frames += 1
                                 h264_last_frame_time = time.monotonic()
-                                h, w, ch = arr.shape
-                                qimg = QtGui.QImage(arr.data, w, h, w * ch, QtGui.QImage.Format.Format_BGR888)
-                                last_img = qimg.copy()
+                                last_frame_bgr = arr.copy()
+                                last_img = _qimage_from_bgr(last_frame_bgr)
                                 redraw()
                     except av.AVError:
                         h264_parse_errors += 1
