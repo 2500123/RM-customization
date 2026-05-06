@@ -303,12 +303,12 @@ def main() -> int:
                     pass
             painter.drawImage(target, self._qimg)
 
-            # Crosshair (center of the displayed image area)
-            pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 1)
+            # Crosshair (center of the displayed image area)  准心
+            pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 0.5)
             painter.setPen(pen)
             cx, cy = x + out_w // 2, y + out_h // 2
             gap = 0
-            length = 70
+            length = 300
             painter.drawLine(cx, cy - gap, cx, cy - length)
             painter.drawLine(cx, cy + gap, cx, cy + length)
             painter.drawLine(cx - gap, cy, cx - length, cy)

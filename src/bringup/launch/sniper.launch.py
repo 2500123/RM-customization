@@ -133,7 +133,7 @@ def generate_launch_description():
             {'display_scale': 2},            # 显示放大倍数(300->600)
             {'crosshair_offset_x': 0},       # 准心相对中心X偏移
             {'crosshair_offset_y': 0},       # 准心相对中心Y偏移
-            {'crosshair_width': 1},          # 准心线宽(像素)
+            {'crosshair_width': 0.5},          # 准心线宽(像素)
             {'debug_dump_enable': debug_dump_enable},            # 开启后每N帧保存解码窗口画面
             {'debug_dump_every_n_frames': debug_dump_every_n_frames},  # 解码端保存间隔(帧)
             {'debug_dump_save_decoder': dump_save_decoder},      # 解码端窗口保存开关

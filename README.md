@@ -59,12 +59,6 @@ Pacific_doorlock_sniper/
 └────────────────────────────────────┘      └─────────────────────────┘
 ```
 
-> **场上小电脑无法连网**，数据路径: 小电脑 → 串口 → 下位机 → 裁判系统 → MQTT → 自定义客户端。
->
-> **本地测试** 用 `ros2_mqtt_bridge.py` 替代串口链路，小电脑直接连 mosquitto。见 [4.3 本地测试](#43-本地测试mqtt-直连)。
-
----
-
 ## 3. 环境准备
 
 **系统要求：** Ubuntu 22.04+ · ROS 2 Humble · 海康 MVS SDK (`/opt/MVS/include` + `/opt/MVS/lib/64`)
@@ -118,19 +112,7 @@ python3 tools/serial_bridge.py \
 - 关闭关键帧过滤，改为“全量发送”（SPS/PPS + I/P 全部发），让 H.264 的帧间预测真正生效：
 
 ```bash
-python3 tools/serial_bridge.py \
-    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
-    --no-keyframe-filter \
-    --send-rate 45 --redundancy 1 \
-    --print-stats
-```
-```bash
-python3 tools/serial_bridge.py \
-    --device /dev/ttyCH341USB0 \
-    --baud 921600 --robot-id 1 \
-    --no-keyframe-filter \
-    --send-rate 45 --redundancy 1 \
-    --print-stats
+python3 tools/serial_bridge.py     --device /dev/stm32_uart     --baud 921600 --robot-id 1     --no-keyframe-filter     --send-rate 45 --redundancy 1     --print-stats
 ```
 
 说明：
