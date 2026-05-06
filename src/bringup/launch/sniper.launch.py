@@ -30,8 +30,8 @@ def generate_launch_description():
     arg_exposure_time = DeclareLaunchArgument('exposure_time', default_value='12000.0')   # us
     arg_gain = DeclareLaunchArgument('gain', default_value='10.0')
     arg_encode_size = DeclareLaunchArgument('encode_size', default_value='300')
-    arg_output_fps = DeclareLaunchArgument('output_fps', default_value='20')
-    arg_gop_seconds = DeclareLaunchArgument('gop_seconds', default_value='0.5')
+    arg_output_fps = DeclareLaunchArgument('output_fps', default_value='30')
+    arg_gop_seconds = DeclareLaunchArgument('gop_seconds', default_value='0.3')
     arg_x264_preset = DeclareLaunchArgument('x264_preset', default_value='slower')  # x264 preset: auto/ultrafast/.../veryslow
     # 目标编码码率（单位：kbps）。默认 96kbps ~= 12kB/s * 8。
     arg_target_bitrate_kbps = DeclareLaunchArgument('target_bitrate_kbps', default_value='96')

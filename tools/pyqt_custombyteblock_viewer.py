@@ -303,7 +303,7 @@ def main() -> int:
                     pass
             painter.drawImage(target, self._qimg)
 
-            # Crosshair (center of the displayed image area)  准心
+            # 绘制十字准心
             pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 180), 0.5)
             painter.setPen(pen)
             cx, cy = x + out_w // 2, y + out_h // 2
