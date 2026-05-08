@@ -16,7 +16,7 @@
 ### 安装
 
 ```bash
-cd <项目路径>/deploy
+cd /deploy
 chmod +x start-ros-pipeline.sh
 
 sudo cp rm-sniper-ros.service    /etc/systemd/system/
@@ -28,9 +28,35 @@ sudo systemctl enable rm-sniper-ros rm-sniper-serial
 ### 修改串口设备（推荐使用 udev symlink）
 
 ```bash
-sudo systemctl edit rm-sniper-serial
-# 修改 ExecStart 行中的 --device ...
-# 推荐：用 udev 规则创建固定设备名（例如 /dev/stm32_uart），避免 ttyACM0/ttyACM1 重枚举导致服务写入失效。
+参考同济
+串口设置
+    1. 授予权限
+        ```
+        sudo usermod -a -G dialout $USER
+        ```
+    2. 获取端口 ID（serial, idVendor, idProduct）
+        ```
+        udevadm info -a -n /dev/ttyACM0 | grep -E '({serial}|{idVendor}|{idProduct})'
+        ```
+        将 /dev/ttyACM0 替换为实际设备名。
+    3. 创建 udev 规则文件
+        ```
+        sudo touch /etc/udev/rules.d/99-usb-serial.rules
+        ```
+        然后在文件中写入如下内容（用真实 ID 替换示例，SYMLINK 是规则应用后固定的串口名）：
+        ```
+        SUBSYSTEM=="tty", ATTRS{idVendor}=="1234", ATTRS{idProduct}=="1234", ATTRS{serial}=="A1234567", SYMLINK+="gimbal"
+        ```
+    4. 重新加载 udev 规则
+        ```
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger
+        ```
+    5. 检查结果
+        ```
+        ls -l /dev/gimbal
+        # Expected output (example):
+        # lrwxrwxrwx 1 root root 7 Jul 21 10:00 /dev/gimbal -> ttyACM0
 ```
 
 ### 手动启动
@@ -42,7 +68,8 @@ sudo systemctl start rm-sniper-ros rm-sniper-serial
 ### 查看状态 / 日志
 
 ```bash
-sudo systemctl status rm-sniper-ros rm-sniper-serial
+sudo systemctl status rm-sniper-ros 
+sudo systemctl status rm-sniper-ros
 journalctl -u rm-sniper-ros -f
 journalctl -u rm-sniper-serial -f
 ```
@@ -64,26 +91,28 @@ sudo systemctl daemon-reload
 
 ## 二、自定义客户端 PC（接收端）
 
-### 安装
+### 创建
 
 ```bash
-cd <项目路径>/deploy
-sudo cp rm-sniper-viewer.service /etc/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable rm-sniper-viewer.service
-systemctl --user start rm-sniper-viewer
+mkdir -p ~/.config/autostart
+nano ~/.config/autostart/rm-sniper-viewer.desktop
+
+写入
+[Desktop Entry]
+Type=Application
+Name=RoboMaster Sniper Viewer
+Exec=/usr/bin/python3 /home/hyc/002/Pacific_doorlock_sniper/tools/pyqt_custombyteblock_viewer.py --mode h264_stream --host 192.168.12.1 --robot-id 1 --print-stats
+X-GNOME-Autostart-enabled=true
+
 ```
+ ### 停止
+ 
+ ```bash
+ pkill -f pyqt_custombyteblock_viewer.py
+ ```
 
-### 停止
+  ### 关闭
 
-```bash
-systemctl --user stop rm-sniper-viewer
-```
-
-### 取消开机自启
-
-```bash
-systemctl --user disable rm-sniper-viewer
-rm /etc/systemd/user/rm-sniper-viewer.service
-systemctl --user daemon-reload
-```
+  ```bash
+  rm ~/.config/autostart/rm-sniper-viewer.desktop
+  ```

@@ -19,15 +19,15 @@ def generate_launch_description():
     debug_dump_enable = False          # 调试开关：每N帧保存5个窗口画面
     debug_dump_every_n_frames = 1     # 调试保存间隔(帧)
     dump_save_raw = False              # 保存编码端 Raw 窗口
-    dump_save_roi = True              # 保存编码端 ROI 窗口
+    dump_save_roi = False              # 保存编码端 ROI 窗口
     dump_save_static = False           # 保存编码端 Static 窗口
-    dump_save_final = True            # 保存编码端 Final 窗口
+    dump_save_final = False            # 保存编码端 Final 窗口
     dump_save_decoder = True          # 保存解码端窗口
 
     # Launch 参数：用于在“带宽/规则约束”内调清晰度与稳定性。
     # - 更清晰（同带宽）通常靠：降低 output_fps、使用更慢的 x264_preset、降低噪声(曝光/增益)。
     # - 更稳（抗绿屏）通常靠：更短 GOP、更低码率峰值、更严格限速/丢弃策略。
-    arg_exposure_time = DeclareLaunchArgument('exposure_time', default_value='12000.0')   # us
+    arg_exposure_time = DeclareLaunchArgument('exposure_time', default_value='12000.0')   
     arg_gain = DeclareLaunchArgument('gain', default_value='10.0')
     arg_encode_size = DeclareLaunchArgument('encode_size', default_value='300')
     arg_output_fps = DeclareLaunchArgument('output_fps', default_value='30')
