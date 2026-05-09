@@ -8,12 +8,11 @@ RoboMaster 2026 **英雄部署模式**下，官方图传和自定义客户端图
 
 | 特性 | 说明 |
 |------|------|
-| 链路 | 串口 (下位机 `0x0310`) → 裁判系统 MQTT `CustomByteBlock`，300B/pkt，burst ~15 chunk/帧 |
+| 链路 | 串口 (下位机 `0x0310`) → 裁判系统 MQTT `CustomByteBlock`，300B/pkt|
 | 编码 | H.264 (x264)，`slower`  |
-| 码率 | 目标 10 kB/s，硬限制 14 kB/s |
+| 码率 | 目标 12 kB/s，硬限制 14 kB/s |
 
 **项目结构**
-
 ```
 Pacific_doorlock_sniper/
 ├── src/
@@ -25,7 +24,7 @@ Pacific_doorlock_sniper/
 │   ├── custom_byteblock.proto       # Protobuf 定义
 │   ├── custom_byteblock_pb.py       # Protobuf 辅助 (含回退)
 │   ├── custom_byteblock_codec.py    # 片段头编解码
-│   ├── serial_bridge.py             # ★ 串口桥接 (生产链路)
+│   ├── serial_bridge.py             # 串口桥接 (生产链路)
 │   ├── ros2_mqtt_bridge.py          # MQTT 桥接 (本地测试)
 │   ├── mqtt_custombyteblock_sender.py  # 独立发送端 (无 ROS)
 │   ├── pyqt_custombyteblock_viewer.py  # PyQt 接收端
@@ -33,9 +32,6 @@ Pacific_doorlock_sniper/
 ├── deploy/                          # 开机自启部署文件
 └── build/ install/ log/
 ```
-
----
-
 ## 2. 链路架构
 
 ```
@@ -55,7 +51,6 @@ Pacific_doorlock_sniper/
 │         192.168.12.1:3333          │ 网线 │                         │
 └────────────────────────────────────┘      └─────────────────────────┘
 ```
-
 ## 3. 环境准备
 
 **系统要求：** Ubuntu 22.04+ · ROS 2 Humble · 海康 MVS SDK (`/opt/MVS/include` + `/opt/MVS/lib/64`)
@@ -76,52 +71,27 @@ pip3 install --user PyQt5 pyserial
 rosdep install --from-paths src --ignore-src -r -y
 cd tools && protoc --python_out=. custom_byteblock.proto && cd ..
 ```
-
 > Mosquitto 仅本地测试需要。Protobuf 编译为可选，`pb.py` 自动回退。
-
----
 
 ## 4. 使用方式
 
 ### 4.1 生产链路（比赛用）
 
 ```bash
-# 终端 1: ROS 管线 (相机 + H.264 编码)
+#1: ROS 管线 (相机 + H.264 编码)
 colcon build && source install/setup.bash
 ros2 launch bringup sniper.launch.py
 
-# 终端 2: 串口桥接 (ROS → 下位机, 关键帧模式)
-# --send-rate 串口速率上限  --chunk-delay-ms burst 内 chunk 间隔
-# --keyframe-interval 节流间隔 (0=不节流 ~5fps)
+#2: 串口桥接
 source install/setup.bash
-python3 tools/serial_bridge.py \
-    --device /dev/ttyACM0 --baud 921600 --robot-id 1 \
-    --send-rate 40 --redundancy 1 --chunk-delay-ms 20 \
-    --keyframe-interval 0.25 --print-stats
-
-#### 4.1.1 提高画质/帧率（发送端 CPU 有余量时）
-
->
-> 生产默认用 `serial_bridge.py` 的“关键帧过滤”模式：主要发送 **SPS/PPS + IDR(I 帧)**，大量 **P 帧会被丢弃**，因此帧率会被 `--keyframe-interval` 直接限制（常见 ~4fps）。
-
-**方案 A：保持带宽不变，显著提高 fps（推荐优先尝试）**
-
-- 关闭关键帧过滤，改为“全量发送”（SPS/PPS + I/P 全部发），让 H.264 的帧间预测真正生效：
-
-```bash
 python3 tools/serial_bridge.py     --device /dev/stm32_uart     --baud 921600 --robot-id 1     --no-keyframe-filter     --send-rate 45 --redundancy 1     --print-stats
-```
 
-### 4.2 接收端（自定义客户端 PC）
-
-```bash
+#3:接收
 python3 tools/pyqt_custombyteblock_viewer.py \
     --mode h264_stream --host 192.168.12.1 --robot-id 1 --print-stats
 ```
 
-### 4.3 本地测试（MQTT 直连）
-
-无下位机环境时，小电脑通过 MQTT 直接发 → mosquitto → viewer:
+### 4.3 本地测试
 
 ```bash
 # 终端 1: MQTT Broker
@@ -139,15 +109,11 @@ python3 tools/ros2_mqtt_bridge.py --robot-id 1 --host 127.0.0.1 --print-stats
 python3 tools/pyqt_custombyteblock_viewer.py \
     --mode h264_stream --host 127.0.0.1 --robot-id 1 --print-stats
 ```
-
 ### 4.5 UDP HEVC 接收
 
 ```bash
 python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 ```
-
----
-
 ## 5. ROS 功能包
 
 | 功能包 | 节点 | 说明 |
@@ -156,8 +122,6 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
 | `doorlock_sniper` | `video_encoder` | H.264 编码 + 运动检测 → `/video_stream` (280B) |
 
 `sniper.launch.py` 可调参数见文件内注释。相机代码源自 [rm-vision](https://github.com/chenjunnn/rm_vision)。
----
-
 ## 6. 部署
 
 开机自启 systemd 服务文件及部署教程见 `deploy/README.md`。
