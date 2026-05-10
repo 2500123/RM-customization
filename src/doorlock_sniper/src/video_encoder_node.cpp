@@ -5,7 +5,6 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>  // 为 memcpy/memset
-#include <vector>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -38,7 +37,7 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   param_motion_threshold_ = this->declare_parameter("motion_threshold", 14);
   param_motion_erode_px_ = this->declare_parameter("motion_erode_px", 1);
   param_motion_dilate_px_ = this->declare_parameter("motion_dilate_px", 2);
-  param_motion_trail_frames_ = this->declare_parameter("motion_trail_frames", 3);
+  param_motion_trail_frames_ = this->declare_parameter("motion_trail_frames", 6);
   param_trail_disable_motion_ratio_ = this->declare_parameter("trail_disable_motion_ratio", 0.30);
   param_bg_update_alpha_ = this->declare_parameter("bg_update_alpha", 0.01);
   param_bg_blur_sigma_ = this->declare_parameter("bg_blur_sigma", 1.2);
@@ -629,9 +628,9 @@ void VideoEncoderNode::pull_stream_and_packetize()
       stream_buffer_.resize(old_size + map.size);
       memcpy(stream_buffer_.data() + old_size, map.data, map.size);
 
-      // NAL-aware slicing: try not to cut NAL units across fragments.
-      // We still publish fixed-size payloads (pad zeros up to param_packet_size_)
-      // so downstream/MCU that expects fixed-length data remains compatible.
+      // 280‑B blind slicing.
+      // PyAV codec.parse() maintains internal state and correctly reassembles
+      // NAL units that span multiple chunks.  No start‑code alignment is needed.
       while (stream_buffer_.size() >= packet_bytes) {
         const int64_t now_ns = this->now().nanoseconds();
         while (!sent_window_.empty() && (now_ns - sent_window_.front().first) > window_ns) {
@@ -643,54 +642,21 @@ void VideoEncoderNode::pull_stream_and_packetize()
           break;
         }
 
-        // Find NAL start codes within the head of the buffer and pick the
-        // largest packet length <= packet_bytes that ends at a NAL boundary
-        // (i.e. at the next start-code position). If none found, fall back
-        // to the original blind-slice size to avoid deadlock.
-        size_t best_len = 0;
-        std::vector<size_t> starts;
-        const size_t scan_limit = std::min(stream_buffer_.size(), packet_bytes + 4);
-        for (size_t i = 0; i + 3 < scan_limit; ++i) {
-          const bool start_code_3 = (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 && stream_buffer_[i + 2] == 1);
-          const bool start_code_4 = (stream_buffer_[i] == 0 && stream_buffer_[i + 1] == 0 && stream_buffer_[i + 2] == 0 && stream_buffer_[i + 3] == 1);
-          if (start_code_3 || start_code_4) {
-            starts.push_back(i);
-            // advance a little to avoid re-detecting overlapping codes
-            i += (start_code_4 ? 3 : 2);
-          }
-        }
-
-        if (starts.size() >= 2) {
-          // For each NAL start position, the end of that NAL is the next start
-          for (size_t i = 0; i + 1 < starts.size(); ++i) {
-            size_t nal_end = starts[i + 1];
-            if (nal_end <= packet_bytes) best_len = nal_end;
-            else break;
-          }
-        }
-
-        if (best_len == 0) {
-          // No safe NAL boundary found within packet_bytes: fallback to blind slice
-          best_len = packet_bytes;
-        }
-
         doorlock_sniper::msg::VideoPacket pkt;
         pkt.sequence_id = packet_sequence_id_++;
         pkt.timestamp_ns = now_ns;
 
-        // Zero-pad to fixed payload length to preserve downstream wire format
         pkt.data.fill(0);
-        memcpy(pkt.data.data(), stream_buffer_.data(), best_len);
+        memcpy(pkt.data.data(), stream_buffer_.data(), param_packet_size_);
 
         packet_pub_->publish(pkt);
         sent_window_.emplace_back(now_ns, packet_bytes);
         sent_window_bytes_ += packet_bytes;
 
-        // Advance buffer by the actual bytes consumed (best_len)
         memmove(stream_buffer_.data(),
-                stream_buffer_.data() + best_len,
-                stream_buffer_.size() - best_len);
-        stream_buffer_.resize(stream_buffer_.size() - best_len);
+                stream_buffer_.data() + param_packet_size_,
+                stream_buffer_.size() - param_packet_size_);
+        stream_buffer_.resize(stream_buffer_.size() - param_packet_size_);
       }
 
       // 排队时延上限：防止突发造成长延时。超限时丢弃旧数据。

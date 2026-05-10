@@ -28,15 +28,15 @@ def generate_launch_description():
     # - 更清晰（同带宽）通常靠：降低 output_fps、使用更慢的 x264_preset、降低噪声(曝光/增益)。
     # - 更稳（抗绿屏）通常靠：更短 GOP、更低码率峰值、更严格限速/丢弃策略。
     arg_exposure_time = DeclareLaunchArgument('exposure_time', default_value='12000.0')   
-    arg_gain = DeclareLaunchArgument('gain', default_value='10')
+    arg_gain = DeclareLaunchArgument('gain', default_value='7.0')
     arg_encode_size = DeclareLaunchArgument('encode_size', default_value='300')
     arg_output_fps = DeclareLaunchArgument('output_fps', default_value='30')
     arg_gop_seconds = DeclareLaunchArgument('gop_seconds', default_value='0.3')
     arg_x264_preset = DeclareLaunchArgument('x264_preset', default_value='slower')  # x264 preset: auto/ultrafast/.../veryslow
-    # 目标编码码率（单位：kbps）。默认 105kbps ~= 13.1kB/s * 8。
-    arg_target_bitrate_kbps = DeclareLaunchArgument('target_bitrate_kbps', default_value='100')
+    # 目标编码码率（单位：kbps）。默认 96kbps ~= 12kB/s * 8。
+    arg_target_bitrate_kbps = DeclareLaunchArgument('target_bitrate_kbps', default_value='96')
     # 发送硬上限（单位：kB/s）。目标码率建议略低于硬上限，留出关键帧/VBV 波动余量。
-    arg_bandwidth_limit_kbytes = DeclareLaunchArgument('bandwidth_limit_kbytes', default_value='14.0')
+    arg_bandwidth_limit_kbytes = DeclareLaunchArgument('bandwidth_limit_kbytes', default_value='13.5')
     arg_force_monochrome = DeclareLaunchArgument('force_monochrome', default_value='false')
 
     exposure_time = LaunchConfiguration('exposure_time')
@@ -104,7 +104,7 @@ def generate_launch_description():
                     {'motion_threshold': 14},                            # 运动检测阈值
                     {'motion_erode_px': 1},                              # 运动掩码腐蚀像素 (与 C++ 默认一致)
                     {'motion_dilate_px': 2},                             # 运动掩码膨胀像素 (与 C++ 默认一致)
-                    {'motion_trail_frames': 3},                          # 拖影历史帧数 (与 C++ 默认一致，避免内存占用过高)
+                    {'motion_trail_frames': 6},                          # 拖影历史帧数 (与 C++ 默认一致，避免内存占用过高)
                     {'trail_disable_motion_ratio': 0.30},                # 全局运动比例超阈值时临时禁用拖影显示
                     {'bg_update_alpha': 0.01},                           # 背景模型更新速度
                     {'bg_blur_sigma': 1.2},                              # 静态区模糊强度 (与 C++ 默认一致)

@@ -253,8 +253,6 @@ def main() -> int:
                     help="每个关键帧分片重复发送次数 (≥1, 模拟 QoS 1)")
     ap.add_argument("--chunk-delay-ms", type=int, default=5,
                     help="Burst 内相邻 chunk 串口写入间隔 (ms)")
-    ap.add_argument("--debug-seq", action="store_true",
-                    help="打印每个数据包的 seq 值用于丢包检测")
     args = ap.parse_args()
 
     rclpy.init(args=sys.argv[1:])
@@ -375,8 +373,6 @@ def main() -> int:
 
             # 串口帧封装（传入当前 seq，每次递增，循环使用即可）
             frame = pack_serial_frame(args.cmd_id, frag, seq=seq_counter)
-            if args.debug_seq and serial_tx % 20 == 0:  # 每20个数据包打印一次，避免日志过多
-                node.get_logger().info(f"TX seq={seq_counter:3d} frame_id={frame_id:5d}")
             seq_counter = (seq_counter + 1) & 0xFF  # seq 范围 0-255
 
             # ── 冗余发送 (模拟 QoS 1): 同一帧发多次 ──

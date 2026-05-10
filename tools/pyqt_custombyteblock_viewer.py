@@ -184,8 +184,6 @@ def main() -> int:
     ap.add_argument("--window", default="RoboMaster CustomBlock Viewer")
     ap.add_argument("--mode", choices=["h264_stream", "hevc_udp", "stats_only"], default="h264_stream")
     ap.add_argument("--print-stats", action="store_true")
-    ap.add_argument("--debug-frame-id", action="store_true",
-                    help="打印每个 frame_id 用于丢包检测")
     args = ap.parse_args()
 
     try:
@@ -359,9 +357,6 @@ def main() -> int:
     last_frame_id: Optional[int] = None
     gap_count = 0
     lost_pkts = 0
-    # ── NAL 跨 fragment 缓存（用于缓解盲切分问题）──
-    _h264_pending_chunks: dict = {}  # {frame_id: (chunk_bytes, attempts)}
-    _h264_cache_hit = 0  # 缓存救回次数
 
     payload_queue: "queue.Queue[bytes]" = queue.Queue(maxsize=2000)
 
@@ -420,7 +415,7 @@ def main() -> int:
             status_label.setText(
                 f"MQTT {args.host}:{args.port} topic={args.topic} | "
                 f"rx={rx_msgs} bad={bad_msgs} lost={lost_pkts}({loss_pct}) gaps={gap_count} "
-                f"frames={h264_frames} errs={h264_parse_errors} stall={h264_stall_resets} cache_hit={_h264_cache_hit} | "
+                f"frames={h264_frames} errs={h264_parse_errors} stall={h264_stall_resets} | "
                 f"src={last_src_wh[0]}x{last_src_wh[1]} view={view_wh[0]}x{view_wh[1]} out={last_out_wh[0]}x{last_out_wh[1]} | "
                 f"data={last_data_len}B"
             )
@@ -442,7 +437,7 @@ def main() -> int:
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_frame_bgr, last_data_len, last_data_head
-        nonlocal last_frame_id, gap_count, lost_pkts, _h264_cache_hit
+        nonlocal last_frame_id, gap_count, lost_pkts
         rx_msgs = bad_msgs = 0
         h264_frames = 0
         h264_parse_errors = 0
@@ -457,8 +452,6 @@ def main() -> int:
         last_data_head = b""
         last_frame_id = None
         gap_count = lost_pkts = 0
-        _h264_cache_hit = 0
-        _h264_pending_chunks.clear()
         try:
             while True:
                 payload_queue.get_nowait()
@@ -502,7 +495,7 @@ def main() -> int:
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
         nonlocal _h264_codec
-        nonlocal last_frame_id, gap_count, lost_pkts, _h264_cache_hit
+        nonlocal last_frame_id, gap_count, lost_pkts
         drained = 0
         while drained < 200:
             try:
@@ -602,18 +595,7 @@ def main() -> int:
                         diff = (hdr.frame_id - last_frame_id) & 0xFFFF
                         if diff > 1:
                             gap_count += 1
-                            lost_count = diff - 1
-                            lost_pkts += lost_count
-                            if args.debug_frame_id:
-                                print(
-                                    f"[RX] frame_id={hdr.frame_id:5d} | ⚠ 丢包: {lost_count:3d} 个 "
-                                    f"(期望={last_frame_id+1:5d}) | 总丢包={lost_pkts:5d}",
-                                    flush=True
-                                )
-                    
-                    if args.debug_frame_id and rx_msgs % 50 == 1:
-                        print(f"[RX] frame_id={hdr.frame_id:5d} | 总接收={rx_msgs:6d} 总丢包={lost_pkts:5d}", flush=True)
-                    
+                            lost_pkts += diff - 1
                     last_frame_id = hdr.frame_id
 
                     # ── 零填充去除 ──
@@ -633,43 +615,13 @@ def main() -> int:
                             _h264_codec = None
                         if _h264_codec is None:
                             continue
-                        # 清空缓存（新 codec 时不需要旧的缓存）
-                        _h264_pending_chunks.clear()
 
-                    # ── 尝试解析 chunk ──
-                    decode_ok = False
-                    chunk_to_parse = chunk
-                    
-                    # 若有待缓存的前一个 fragment，尝试先合并后解析
-                    if hdr.frame_id in _h264_pending_chunks:
-                        prev_chunk, prev_attempts = _h264_pending_chunks[hdr.frame_id]
-                        if prev_attempts < 2:
-                            combined = prev_chunk + chunk_to_parse
-                            try:
-                                packets = _h264_codec.parse(combined)
-                                # 成功合并解析！
-                                _h264_cache_hit += 1
-                                decode_ok = True
-                                chunk_to_parse = combined
-                                del _h264_pending_chunks[hdr.frame_id]
-                            except Exception:
-                                pass
-                    
-                    # 直接解析当前 chunk（或合并后的数据）
-                    if not decode_ok:
-                        try:
-                            packets = _h264_codec.parse(chunk_to_parse)
-                            decode_ok = True
-                        except Exception:
-                            h264_parse_errors += 1
-                            # 缓存此 chunk，等待下一个 fragment 尝试合并
-                            if len(_h264_pending_chunks) < 20:  # 防止缓存泄漏
-                                _h264_pending_chunks[hdr.frame_id] = (chunk_to_parse, 1)
-                            decode_ok = False
-                    
-                    if not decode_ok:
+                    # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
+                    try:
+                        packets = _h264_codec.parse(chunk)
+                    except Exception:
+                        h264_parse_errors += 1
                         continue
-                    
                     try:
                         for pkt in packets:
                             try:
@@ -711,7 +663,6 @@ def main() -> int:
                     _h264_codec.flags |= av.codec.context.Flags.LOW_DELAY
                 except Exception:
                     pass
-                _h264_pending_chunks.clear()
                 h264_stall_resets += 1
                 h264_last_frame_time = time.monotonic()  # prevent rapid re-trigger
 
@@ -755,8 +706,7 @@ def main() -> int:
             status_label.setText(f"MQTT connect failed: {e}")
             return app.exec()
         client.loop_start()
-        debug_msg = " (--debug-frame-id 以启用详细丢包检测)" if not args.debug_frame_id else " (frame_id 丢包检测已启用)"
-        print(f"[viewer] MQTT connected: {args.host}:{args.port}/{args.topic} clientID={client_id}{debug_msg}")
+        print(f"[viewer] MQTT connected: {args.host}:{args.port}/{args.topic} clientID={client_id}")
 
     timer = QtCore.QTimer()
     timer.setInterval(15)
