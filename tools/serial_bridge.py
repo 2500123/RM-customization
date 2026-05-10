@@ -242,7 +242,7 @@ def main() -> int:
         action="store_true",
         help="Disable auto-reconnect when serial write fails (USB re-enumeration, unplug, etc)",
     )
-    ap.add_argument("--send-rate", type=int, default=40,
+    ap.add_argument("--send-rate", type=int, default=45,
                     help="串口发送速率上限 (pkt/s)，不超过 MCU 处理能力")
     ap.add_argument(
         "--keyframe-interval", type=float, default=1.0,

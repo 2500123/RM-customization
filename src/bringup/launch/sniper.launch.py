@@ -104,7 +104,7 @@ def generate_launch_description():
                     {'motion_threshold': 14},                            # 运动检测阈值
                     {'motion_erode_px': 1},                              # 运动掩码腐蚀像素 (与 C++ 默认一致)
                     {'motion_dilate_px': 2},                             # 运动掩码膨胀像素 (与 C++ 默认一致)
-                    {'motion_trail_frames': 3},                          # 拖影历史帧数 (与 C++ 默认一致，避免内存占用过高)
+                    {'motion_trail_frames': 6},                          # 拖影历史帧数 (与 C++ 默认一致，避免内存占用过高)
                     {'trail_disable_motion_ratio': 0.30},                # 全局运动比例超阈值时临时禁用拖影显示
                     {'bg_update_alpha': 0.01},                           # 背景模型更新速度
                     {'bg_blur_sigma': 1.2},                              # 静态区模糊强度 (与 C++ 默认一致)

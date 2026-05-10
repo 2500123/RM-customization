@@ -92,7 +92,7 @@ private:
   int param_motion_threshold_ = 14;
   int param_motion_erode_px_ = 1;
   int param_motion_dilate_px_ = 2;
-  int param_motion_trail_frames_ = 3;
+  int param_motion_trail_frames_ = 6;
   double param_trail_disable_motion_ratio_ = 0.30;
   double param_bg_update_alpha_ = 0.01;
   double param_bg_blur_sigma_ = 1.2;

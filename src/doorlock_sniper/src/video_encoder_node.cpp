@@ -37,7 +37,7 @@ VideoEncoderNode::VideoEncoderNode(const rclcpp::NodeOptions & options)
   param_motion_threshold_ = this->declare_parameter("motion_threshold", 14);
   param_motion_erode_px_ = this->declare_parameter("motion_erode_px", 1);
   param_motion_dilate_px_ = this->declare_parameter("motion_dilate_px", 2);
-  param_motion_trail_frames_ = this->declare_parameter("motion_trail_frames", 3);
+  param_motion_trail_frames_ = this->declare_parameter("motion_trail_frames", 6);
   param_trail_disable_motion_ratio_ = this->declare_parameter("trail_disable_motion_ratio", 0.30);
   param_bg_update_alpha_ = this->declare_parameter("bg_update_alpha", 0.01);
   param_bg_blur_sigma_ = this->declare_parameter("bg_blur_sigma", 1.2);

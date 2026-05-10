@@ -136,4 +136,3 @@ python3 tools/pyqt_custombyteblock_viewer.py --mode hevc_udp
  
  ping 192.168.12.1 
  nc -zv 192.168.12.1 3333
- 
