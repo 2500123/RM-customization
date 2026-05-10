@@ -34,7 +34,7 @@ def generate_launch_description():
     arg_gop_seconds = DeclareLaunchArgument('gop_seconds', default_value='0.3')
     arg_x264_preset = DeclareLaunchArgument('x264_preset', default_value='slower')  # x264 preset: auto/ultrafast/.../veryslow
     # 目标编码码率（单位：kbps）。默认 105kbps ~= 13.1kB/s * 8。
-    arg_target_bitrate_kbps = DeclareLaunchArgument('target_bitrate_kbps', default_value='105')
+    arg_target_bitrate_kbps = DeclareLaunchArgument('target_bitrate_kbps', default_value='100')
     # 发送硬上限（单位：kB/s）。目标码率建议略低于硬上限，留出关键帧/VBV 波动余量。
     arg_bandwidth_limit_kbytes = DeclareLaunchArgument('bandwidth_limit_kbytes', default_value='14.0')
     arg_force_monochrome = DeclareLaunchArgument('force_monochrome', default_value='false')
