@@ -314,7 +314,8 @@ def main() -> int:
             painter.drawLine(cx - gap, cy, cx - length, cy)
             painter.drawLine(cx + gap, cy, cx + length, cy)
 
-    client_id = "1"
+    client_id = "101"  #蓝色
+    #client_id = "1"    #红色
 
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QWidget()

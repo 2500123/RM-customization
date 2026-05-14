@@ -87,8 +87,15 @@ source install/setup.bash
 python3 tools/serial_bridge.py     --device /dev/stm32_uart     --baud 921600 --robot-id 1     --no-keyframe-filter     --send-rate 45 --redundancy 1     --print-stats
 
 #3:接收
+#红色
 python3 tools/pyqt_custombyteblock_viewer.py \
     --mode h264_stream --host 192.168.12.1 --robot-id 1 --print-stats
+
+#蓝色
+python3 tools/pyqt_custombyteblock_viewer.py \
+    --mode h264_stream --host 192.168.12.1 --robot-id 101 --print-stats
+
+    
 ```
 
 ### 4.3 本地测试
