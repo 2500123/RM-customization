@@ -171,6 +171,56 @@ def _has_sps_pps(data: bytes) -> bool:
     return False
 
 
+def _find_nal_units(data: bytes) -> list:
+    """Scan annex-B data and return list of (offset, length, tow, nal_type) for all complete NAL units.
+
+    A NAL unit is delimited by start codes: the NAL ends where the next start code begins
+    (or at end of data for the final NAL).  The last entry is considered "incomplete" if data
+    does not end with a start code — its nal_type is set to -1.
+    """
+    starts: list = []  # (offset, start_code_len)
+    n = len(data)
+    i = 0
+    while i < n - 3:
+        if i + 4 <= n and data[i:i + 4] == _ST4:
+            starts.append((i, 4))
+            i += 4
+            continue
+        if data[i:i + 3] == _ST3:
+            starts.append((i, 3))
+            i += 3
+            continue
+        i += 1
+
+    nal_units = []
+    for idx, (off, sc_len) in enumerate(starts):
+        nal_start = off + sc_len
+        if idx + 1 < len(starts):
+            nal_end = starts[idx + 1][0]
+            complete = True
+        else:
+            nal_end = n
+            complete = False
+        if nal_start >= nal_end:
+            continue
+        nal_type = data[nal_start] & 0x1F if complete else -1
+        nal_units.append((nal_start, nal_end - nal_start, nal_type))
+    return nal_units
+
+
+def _extract_sps_pps(data: bytes):
+    """Return (sps_nal_bytes, pps_nal_bytes) from annex-B data, or (None, None)."""
+    sps = pps = None
+    for off, length, ntype in _find_nal_units(data):
+        if ntype == 7:
+            sps = data[off:off + length]
+        elif ntype == 8:
+            pps = data[off:off + length]
+        if sps is not None and pps is not None:
+            break
+    return sps, pps
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="RoboMaster 自定义数据流图形化接收端",
@@ -198,7 +248,9 @@ def main() -> int:
         from custom_byteblock_codec import CODEC_H264, unpack_fragment  # type: ignore
 
     # ── PyAV 解码器 ──
-    _h264_codec = None
+    _h264_codec = None          # 延迟创建：收到完整 SPS+PPS 后才初始化
+    _h264_err_streak = 0        # 连续解码错误计数，达到阈值后强制等待下一个 SPS/PPS 重建
+    _h264_err_streak_limit = 10
     _hevc_codec = None
     _hevc_reasm: dict = {}
 
@@ -209,11 +261,7 @@ def main() -> int:
                 av.logging.set_level(av.logging.ERROR)  # suppress "no frame!" noise
             except Exception:
                 pass
-            if args.mode == "h264_stream":
-                _h264_codec = av.CodecContext.create("h264", "r")
-                _h264_codec.thread_type = "FRAME"
-                _h264_codec.flags |= av.codec.context.Flags.LOW_DELAY
-            elif args.mode == "hevc_udp":
+            if args.mode == "hevc_udp":
                 _hevc_codec = av.CodecContext.create("hevc", "r")
                 _hevc_codec.thread_type = "FRAME"
                 _hevc_codec.flags |= av.codec.context.Flags.LOW_DELAY
@@ -308,12 +356,33 @@ def main() -> int:
             painter.setPen(pen)
             cx, cy = x + out_w // 2, y + out_h // 2
             gap = 0
-            length = 300
-            painter.drawLine(cx, cy - gap, cx, cy - length)
-            painter.drawLine(cx, cy + gap, cx, cy + length)
+            length = 600
+            painter.drawLine(cx, cy - gap, cx, cy - 15)
+            painter.drawLine(cx, cy + gap, cx, cy + 15)
+
+            painter.drawLine(cx+40, cy - gap, cx+40, cy - length)
+            painter.drawLine(cx+40, cy + gap, cx+40, cy + length)
+
+            painter.drawLine(cx-40, cy - gap, cx-40, cy - length)
+            painter.drawLine(cx-40, cy + gap, cx-40, cy + length)
+
+
             painter.drawLine(cx - gap, cy, cx - length, cy)
             painter.drawLine(cx + gap, cy, cx + length, cy)
 
+            # 在竖直方向添加刻度: 上下每隔 20 像素绘制短横线
+            tick_step = 40
+            tick_half = 15
+            for d in range(tick_step, length + 1, tick_step):
+                painter.drawLine(cx+80 - tick_half, cy - d, cx+80 + tick_half, cy - d)
+                painter.drawLine(cx+80 - tick_half, cy + d, cx+80 + tick_half, cy + d)
+
+            # 在水平方向添加刻度: 左右每隔 20 像素绘制短竖线
+            for d in range(tick_step, length + 1, tick_step):
+                painter.drawLine(cx - d, cy - tick_half, cx - d, cy + tick_half)
+                painter.drawLine(cx + d, cy - tick_half, cx + d, cy + tick_half)
+
+    #client_id = "101"  #蓝色
     client_id = "1"    #红色
 
     app = QtWidgets.QApplication(sys.argv)
@@ -438,6 +507,7 @@ def main() -> int:
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_frame_bgr, last_data_len, last_data_head
         nonlocal last_frame_id, gap_count, lost_pkts
+        nonlocal _h264_codec, _h264_err_streak
         rx_msgs = bad_msgs = 0
         h264_frames = 0
         h264_parse_errors = 0
@@ -463,6 +533,8 @@ def main() -> int:
                 _h264_codec.flush_buffers()
             except Exception:
                 pass
+        _h264_codec = None
+        _h264_err_streak = 0
         if _hevc_codec is not None:
             try:
                 _hevc_codec.flush_buffers()
@@ -494,7 +566,7 @@ def main() -> int:
         nonlocal h264_last_frame_time, h264_stall_resets
         nonlocal hevc_frames, hevc_packets, hevc_parse_errors
         nonlocal last_img, last_data_len, last_data_head
-        nonlocal _h264_codec
+        nonlocal _h264_codec, _h264_err_streak
         nonlocal last_frame_id, gap_count, lost_pkts
         drained = 0
         while drained < 200:
@@ -545,7 +617,7 @@ def main() -> int:
                             for pkt in parsed:
                                 try:
                                     frames = _hevc_codec.decode(pkt)
-                                except av.AVError:
+                                except Exception:
                                     hevc_parse_errors += 1
                                     continue
                                 for frame in frames:
@@ -559,7 +631,7 @@ def main() -> int:
                                     last_src_wh = (int(frame.width), int(frame.height))
                                     last_img = _qimage_from_bgr(last_frame_bgr)
                                     redraw()
-                        except av.AVError:
+                        except Exception:
                             hevc_parse_errors += 1
                     continue
 
@@ -580,14 +652,15 @@ def main() -> int:
                 if args.mode == "h264_stream":
                     try:
                         hdr, chunk = unpack_fragment(data)
-                    except Exception:
+                    except Exception as _e:
                         bad_msgs += 1
                         lost_pkts += 1
+                        print(f"[bad:unpack] {type(_e).__name__}: {_e} | data_len={len(data)} head={data[:16].hex()}", flush=True)
                         continue
                     if hdr.codec != CODEC_H264:
                         bad_msgs += 1
                         lost_pkts += 1
-                        print(f"DEBUG lost={lost_pkts} bad={bad_msgs} rx={rx_msgs}", flush=True)
+                        print(f"[bad:codec] codec={hdr.codec} expected={CODEC_H264} frame_id={hdr.frame_id} total_len={hdr.total_len} frag=({hdr.frag_idx}/{hdr.frag_cnt})", flush=True)
                         continue
 
                     # ── 丢包检测 (bad 消息也视为丢失) ──
@@ -604,30 +677,70 @@ def main() -> int:
                     if not chunk:
                         continue
 
-                    # ── SPS/PPS 出现 → 重建解码器 ──
-                    if _h264_codec is None or _has_sps_pps(chunk):
-                        try:
-                            import av as _av
-                            _h264_codec = _av.CodecContext.create("h264", "r")
-                            _h264_codec.thread_type = "FRAME"
-                            _h264_codec.flags |= _av.codec.context.Flags.LOW_DELAY
-                        except Exception:
-                            _h264_codec = None
-                        if _h264_codec is None:
+                    # ── 解码器初始化 / 重建 ──
+                    # 策略：不在启动时创建解码器，而是在收到完整 SPS+PPS 后延迟创建。
+                    # 这样解码器从一开始就拥有正确的配置，不会出现 "non-existing PPS" 错误。
+                    # 运行中如果连续解码错误达到阈值，也强制等待下一个 SPS/PPS 重建。
+                    need_rebuild = (_h264_codec is None) or (_h264_err_streak >= _h264_err_streak_limit)
+                    if need_rebuild:
+                        sps, pps = _extract_sps_pps(chunk)
+                        if sps is not None and pps is not None:
+                            try:
+                                import av as _av
+                                # 创建全新解码器，只喂 SPS+PPS 完成初始化
+                                new_codec = _av.CodecContext.create("h264", "r")
+                                new_codec.thread_type = "FRAME"
+                                new_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                                # 先用纯 SPS+PPS 初始化解码器
+                                init_data = _ST4 + sps + _ST4 + pps
+                                init_pkts = new_codec.parse(init_data)
+                                for ipkt in init_pkts:
+                                    new_codec.decode(ipkt)
+                                _h264_codec = new_codec
+                                _h264_err_streak = 0
+                                if need_rebuild and _h264_codec is not None:
+                                    print(f"[viewer] Decoder initialized with SPS+{len(sps)}B PPS+{len(pps)}B", flush=True)
+                            except Exception:
+                                _h264_codec = None
+                                _h264_err_streak = _h264_err_streak_limit  # 下次继续尝试
+                            if _h264_codec is None:
+                                continue
+                        else:
+                            # 还没有完整 SPS+PPS，跳过
                             continue
+                    elif _has_sps_pps(chunk):
+                        # 正常运行时遇到新的 SPS/PPS（repeat-headers）：重建以支持码流参数变更
+                        sps, pps = _extract_sps_pps(chunk)
+                        if sps is not None and pps is not None:
+                            try:
+                                import av as _av
+                                new_codec = _av.CodecContext.create("h264", "r")
+                                new_codec.thread_type = "FRAME"
+                                new_codec.flags |= _av.codec.context.Flags.LOW_DELAY
+                                init_data = _ST4 + sps + _ST4 + pps
+                                init_pkts = new_codec.parse(init_data)
+                                for ipkt in init_pkts:
+                                    new_codec.decode(ipkt)
+                                _h264_codec = new_codec
+                                _h264_err_streak = 0
+                            except Exception:
+                                pass
 
                     # Feed raw chunk to PyAV — internal annex-B parser handles NAL assembly
                     try:
                         packets = _h264_codec.parse(chunk)
                     except Exception:
                         h264_parse_errors += 1
+                        _h264_err_streak += 1
                         continue
+                    got_frame = False
                     try:
                         for pkt in packets:
                             try:
                                 frames = _h264_codec.decode(pkt)
-                            except av.AVError:
+                            except Exception:
                                 h264_parse_errors += 1
+                                _h264_err_streak += 1
                                 continue
                             for frame in frames:
                                 if frame is None or frame.width == 0 or frame.height == 0:
@@ -641,11 +754,16 @@ def main() -> int:
                                 last_src_wh = (int(frame.width), int(frame.height))
                                 last_img = _qimage_from_bgr(last_frame_bgr)
                                 redraw()
-                    except av.AVError:
+                                got_frame = True
+                    except Exception:
                         h264_parse_errors += 1
+                        _h264_err_streak += 1
+                    if got_frame:
+                        _h264_err_streak = 0
                     continue
-            except Exception:
+            except Exception as _e:
                 bad_msgs += 1
+                print(f"[bad:fallback] {type(_e).__name__}: {_e} | data_len={len(pb)} head={pb[:16].hex()}", flush=True)
 
         # ── H.264 解码器 stall 检测与自动恢复 ──
         # 如果持续收到数据（rx_msgs 增长）但超过 3 秒没产出任何帧，
@@ -655,14 +773,8 @@ def main() -> int:
             now = time.monotonic()
             stall_sec = now - h264_last_frame_time
             if stall_sec > 3.0:
-                print(f"[viewer] H.264 decoder stalled for {stall_sec:.1f}s (rx={rx_msgs} frames={h264_frames}), recreating...", flush=True)
-                try:
-                    import av
-                    _h264_codec = av.CodecContext.create("h264", "r")
-                    _h264_codec.thread_type = "FRAME"
-                    _h264_codec.flags |= av.codec.context.Flags.LOW_DELAY
-                except Exception:
-                    pass
+                print(f"[viewer] H.264 decoder stalled for {stall_sec:.1f}s (rx={rx_msgs} frames={h264_frames}), marking for rebuild...", flush=True)
+                _h264_codec = None  # 置空，下次 SPS/PPS 到来时延迟重建
                 h264_stall_resets += 1
                 h264_last_frame_time = time.monotonic()  # prevent rapid re-trigger
 
